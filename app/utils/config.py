@@ -45,10 +45,12 @@ class Settings(BaseModel):
     green_api_poll_interval_seconds: float = 1.0
     runtime_channels_refresh_seconds: float = 15.0
     runtime_channel_heartbeat_seconds: float = 60.0
+    runtime_service_base_url: str = "http://127.0.0.1:8011"
+    runtime_service_port: int = 8011
+    runtime_service_token: str = ""
+    runtime_service_autostart: bool = True
+    runtime_platform_channel_key: str = "platform-main"
     simple_connect_name: str = "Platform WhatsApp"
-    simple_connect_green_api_url: str = ""
-    simple_connect_green_api_id_instance: str = ""
-    simple_connect_green_api_token: str = ""
 
     @field_validator("log_level")
     @classmethod
@@ -93,15 +95,6 @@ class Settings(BaseModel):
     def admin_auth_enabled(self) -> bool:
         """Return True when admin routes are protected by a configured token."""
         return bool(self.platform_admin_token)
-
-    @property
-    def simple_connect_configured(self) -> bool:
-        """Return True when the simple QR connect page has one configured Green API instance."""
-        return bool(
-            self.simple_connect_green_api_url
-            and self.simple_connect_green_api_id_instance
-            and self.simple_connect_green_api_token
-        )
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -157,13 +150,27 @@ class Settings(BaseModel):
                     cls.model_fields["runtime_channel_heartbeat_seconds"].default,
                 )
             ),
+            runtime_service_base_url=os.getenv(
+                "RUNTIME_SERVICE_BASE_URL",
+                cls.model_fields["runtime_service_base_url"].default,
+            ).strip().rstrip("/"),
+            runtime_service_port=int(
+                os.getenv(
+                    "RUNTIME_SERVICE_PORT",
+                    cls.model_fields["runtime_service_port"].default,
+                )
+            ),
+            runtime_service_token=os.getenv("RUNTIME_SERVICE_TOKEN", "").strip(),
+            runtime_service_autostart=os.getenv("RUNTIME_SERVICE_AUTOSTART", "true").strip().lower()
+            in {"1", "true", "yes", "on"},
+            runtime_platform_channel_key=os.getenv(
+                "RUNTIME_PLATFORM_CHANNEL_KEY",
+                cls.model_fields["runtime_platform_channel_key"].default,
+            ).strip(),
             simple_connect_name=os.getenv(
                 "SIMPLE_CONNECT_NAME",
                 cls.model_fields["simple_connect_name"].default,
             ).strip(),
-            simple_connect_green_api_url=os.getenv("SIMPLE_CONNECT_GREEN_API_URL", "").strip().rstrip("/"),
-            simple_connect_green_api_id_instance=os.getenv("SIMPLE_CONNECT_GREEN_API_ID_INSTANCE", "").strip(),
-            simple_connect_green_api_token=os.getenv("SIMPLE_CONNECT_GREEN_API_TOKEN", "").strip(),
         )
 
 

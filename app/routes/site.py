@@ -15,7 +15,7 @@ def landing_page() -> str:
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>MINIGREENAPI Platform</title>
-  <meta name="description" content="MINIGREENAPI is a WhatsApp transport layer for AI products. Connect Green API channels, route messages to external AI webhooks, and run WhatsApp as a reusable platform." />
+  <meta name="description" content="MINIGREENAPI is a self-hosted WhatsApp transport layer for AI products. Connect local runtime channels, route messages to external AI webhooks, and run WhatsApp as a reusable platform." />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
@@ -50,7 +50,7 @@ def landing_page() -> str:
           <div class="eyebrow">WhatsApp-first SaaS core</div>
           <h1>Пусть внешние AI подключаются к вам, а не наоборот.</h1>
           <p class="hero-text">
-            MINIGREENAPI превращает Green API и WhatsApp в транспортный слой уровня платформы:
+            MINIGREENAPI превращает ваш собственный WhatsApp runtime в транспортный слой уровня платформы:
             проекты регистрируются у вас, подключают свои каналы, отдают webhook своего AI,
             а вы гарантированно принимаете входящие сообщения, маршрутизируете их в нужный AI и возвращаете ответ в WhatsApp.
           </p>
@@ -71,8 +71,8 @@ def landing_page() -> str:
               </article>
               <article>
                 <span class="card-kicker">Channel</span>
-                <h3>Green API instance</h3>
-                <p>Каждый WhatsApp-канал подключается отдельно и живёт как независимый runtime binding.</p>
+                <h3>WhatsApp runtime</h3>
+                <p>Каждый WhatsApp-канал подключается отдельно и живёт как независимая self-hosted runtime-сессия.</p>
               </article>
               <article>
                 <span class="card-kicker">Runtime</span>
@@ -102,8 +102,8 @@ def landing_page() -> str:
         </article>
         <article class="feature-card reveal">
           <span class="feature-index">03</span>
-          <h2>Green API transport hardening</h2>
-          <p>Runtime сам следит за polling-режимом Green API, восстанавливает настройки и не привязан к одному инстансу.</p>
+          <h2>Self-hosted runtime core</h2>
+          <p>Runtime сам поднимает локальную WhatsApp-сессию, хранит авторизацию и отдаёт QR без внешнего провайдера.</p>
         </article>
       </section>
 
@@ -123,8 +123,8 @@ def landing_page() -> str:
           <div class="timeline-step reveal">
             <span>2</span>
             <div>
-              <h3>К проекту привязывается Green API канал</h3>
-              <p>Каждый WhatsApp-инстанс живёт как отдельный канал внутри вашего ядра.</p>
+              <h3>К проекту привязывается runtime-канал</h3>
+              <p>Каждая WhatsApp-сессия живёт как отдельный канал внутри вашего ядра.</p>
             </div>
           </div>
           <div class="timeline-step reveal">

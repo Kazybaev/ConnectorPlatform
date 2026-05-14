@@ -36,7 +36,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title=settings.app_name,
-    description="Multi-tenant WhatsApp transport platform that routes Green API traffic into external AI systems.",
+    description="Multi-tenant WhatsApp transport platform that routes self-hosted WhatsApp runtime traffic into external AI systems.",
     version="2.0.0",
     debug=settings.debug,
     lifespan=lifespan,

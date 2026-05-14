@@ -7,19 +7,19 @@
       noData: "Пока нет данных",
       dash: "-",
       contactName: "Имя контакта: -",
-      ready: "Готово.",
-      qrPlaceholder: "QR-код загружается...",
+      ready: "Экран подключения готов.",
+      qrPlaceholder: "QR-код появится здесь.",
     },
     badges: {
       connected: "Подключен",
-      disconnected: "Отключен",
+      disconnected: "Нужно подключить",
       notConfigured: "Не настроено",
       error: "Ошибка",
       loading: "Проверяем...",
     },
     polling: {
-      ready: "Polling готов",
-      pending: "Polling не готов",
+      ready: "Runtime активен",
+      pending: "Запускаем runtime",
     },
     qrTypes: {
       qrCode: "QR готов",
@@ -33,20 +33,23 @@
       blocked: "Заблокирован",
       sleepMode: "Спящий режим",
       starting: "Запускается",
+      qr: "QR готов",
       yellowCard: "Ограничен",
       online: "Онлайн",
       offline: "Офлайн",
       connecting: "Подключается",
+      connected: "Подключено",
+      disconnected: "Отключено",
     },
     business: {
       yes: "Да",
       no: "Нет",
     },
     messages: {
-      waiting: "Ожидаем состояние от Green API.",
-      alreadyConnected: "WhatsApp уже подключен.",
-      resetDone: "Сессия завершена. Ожидаем новый QR-код.",
-      updated: "Состояние WhatsApp обновлено.",
+      waiting: "Подготавливаем локальную сессию и QR-код.",
+      alreadyConnected: "WhatsApp уже подключен. Сканировать QR не нужно.",
+      resetDone: "Сессия сброшена. Ожидаем новый QR-код.",
+      updated: "Статус страницы обновлен.",
     },
   };
 
@@ -54,6 +57,7 @@
     pollTimer: null,
     lastConnectionStatus: "disconnected",
   };
+  const STORAGE_KEY = "minigreenapi.simple-connect.snapshot";
 
   const dom = {
     connectionName: document.getElementById("connection-name"),
@@ -88,6 +92,57 @@
     }
 
     dom.resultConsole.textContent = `${message}\n\n${JSON.stringify(payload, null, 2)}`;
+  }
+
+  function hasAccountIdentity(connection) {
+    return Boolean(connection.profile_name || connection.contact_name || connection.phone || connection.chat_id);
+  }
+
+  function saveConnectionSnapshot(connection) {
+    if (!window.localStorage) {
+      return;
+    }
+
+    if (!hasAccountIdentity(connection) && connection.connection_status !== "connected") {
+      window.localStorage.removeItem(STORAGE_KEY);
+      return;
+    }
+
+    const snapshot = {
+      ...connection,
+      qr_code_data_url: "",
+      qr_message: "",
+      last_error: "",
+      logout_performed: false,
+    };
+
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+  }
+
+  function clearConnectionSnapshot() {
+    if (!window.localStorage) {
+      return;
+    }
+
+    window.localStorage.removeItem(STORAGE_KEY);
+  }
+
+  function readConnectionSnapshot() {
+    if (!window.localStorage) {
+      return null;
+    }
+
+    const rawSnapshot = window.localStorage.getItem(STORAGE_KEY);
+    if (!rawSnapshot) {
+      return null;
+    }
+
+    try {
+      return JSON.parse(rawSnapshot);
+    } catch (_error) {
+      window.localStorage.removeItem(STORAGE_KEY);
+      return null;
+    }
   }
 
   function formatMapped(rawValue, mapping, fallback) {
@@ -206,6 +261,7 @@
     }
 
     renderAvatar(connection);
+    saveConnectionSnapshot(connection);
   }
 
   async function requestJson(url, options) {
@@ -248,6 +304,7 @@
         Accept: "application/json",
       },
     });
+    clearConnectionSnapshot();
     renderConnection(payload);
     setConsole(TEXT.messages.resetDone, payload);
   }
@@ -277,7 +334,13 @@
   });
 
   dom.resultConsole.textContent = TEXT.defaults.ready;
-  setBadge("loading");
+  const cachedConnection = readConnectionSnapshot();
+  if (cachedConnection) {
+    renderConnection(cachedConnection);
+    setConsole("Загружен сохраненный снимок платформенного аккаунта.");
+  } else {
+    setBadge("loading");
+  }
   refreshStatus(true).catch((error) => {
     setConsole(error.message);
     setBadge("error");
