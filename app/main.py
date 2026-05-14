@@ -1,0 +1,78 @@
+from __future__ import annotations
+
+import logging
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import AsyncIterator
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from app.routes.health import router as health_router
+from app.routes.onboarding import api_router as onboarding_api_router
+from app.routes.onboarding import router as onboarding_router
+from app.routes.projects import admin_router, project_router
+from app.routes.site import router as site_router
+from app.routes.upload import router as upload_router
+from app.services.project_registry import get_project_registry_service
+from app.utils.config import get_settings
+from app.utils.logging import configure_logging
+
+settings = get_settings()
+configure_logging(settings.log_level)
+logger = logging.getLogger(__name__)
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    logger.info("Starting %s", settings.app_name)
+    get_project_registry_service()
+    yield
+    logger.info("Stopping %s", settings.app_name)
+
+
+app = FastAPI(
+    title=settings.app_name,
+    description="Multi-tenant WhatsApp transport platform that routes Green API traffic into external AI systems.",
+    version="2.0.0",
+    debug=settings.debug,
+    lifespan=lifespan,
+)
+
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(health_router)
+app.include_router(upload_router)
+app.include_router(admin_router)
+app.include_router(project_router)
+app.include_router(site_router)
+app.include_router(onboarding_router)
+app.include_router(onboarding_api_router)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    """Log unexpected errors and hide internal details from the client."""
+    logger.error(
+        "Unhandled application error on %s",
+        request.url.path,
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
