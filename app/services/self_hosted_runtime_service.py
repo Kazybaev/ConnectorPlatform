@@ -99,6 +99,18 @@ class SelfHostedRuntimeService:
             json={},
         )
 
+    def send_message(self, channel_key: str, chat_id: str, text: str) -> dict[str, Any]:
+        """Send one outbound WhatsApp message through the local runtime."""
+        self.ensure_runtime_started()
+        return self._request(
+            method="POST",
+            path=f"/api/v1/channels/{channel_key}/messages/send",
+            json={
+                "chat_id": chat_id,
+                "text": text,
+            },
+        )
+
     def _spawn_runtime_process(self) -> None:
         if not self._runtime_entrypoint.exists():
             raise SelfHostedRuntimeServiceError(
@@ -111,6 +123,11 @@ class SelfHostedRuntimeService:
         env["RUNTIME_PORT"] = str(get_settings().runtime_service_port)
         if get_settings().runtime_service_token:
             env["RUNTIME_TOKEN"] = get_settings().runtime_service_token
+        env["RUNTIME_PLATFORM_CALLBACK_URL"] = (
+            f"{get_settings().platform_public_base_url}/api/v1/runtime/incoming"
+        )
+        if get_settings().runtime_callback_token:
+            env["RUNTIME_PLATFORM_CALLBACK_TOKEN"] = get_settings().runtime_callback_token
 
         popen_kwargs: dict[str, Any] = {
             "args": ["node", str(self._runtime_entrypoint)],

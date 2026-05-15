@@ -1,0 +1,247 @@
+from __future__ import annotations
+
+from fastapi import APIRouter, Header, HTTPException, status
+from fastapi.responses import HTMLResponse
+
+from app.models.schemas import (
+    PlatformChatMessageResponse,
+    PlatformChatSendRequest,
+    PlatformChatSendResponse,
+    PlatformConversationResponse,
+    RuntimeIncomingMessageRequest,
+)
+from app.services.chat_store import ChatConversationRecord, ChatMessageRecord, get_chat_store_service
+from app.services.self_hosted_runtime_service import SelfHostedRuntimeServiceError, get_self_hosted_runtime_service
+from app.utils.config import get_settings
+
+router = APIRouter(include_in_schema=False)
+api_router = APIRouter(tags=["chat-console"])
+
+
+def serialize_conversation(record: ChatConversationRecord) -> PlatformConversationResponse:
+    """Translate one stored conversation into the API response shape."""
+    return PlatformConversationResponse(
+        channel_key=record.channel_key,
+        chat_id=record.chat_id,
+        display_name=record.display_name,
+        phone=record.phone,
+        avatar_url=record.avatar_url,
+        last_message_text=record.last_message_text,
+        last_message_at=record.last_message_at,
+        last_direction=record.last_direction if record.last_direction in {"inbound", "outbound"} else "inbound",
+        last_sender_name=record.last_sender_name,
+        unread_count=record.unread_count,
+    )
+
+
+def serialize_message(record: ChatMessageRecord) -> PlatformChatMessageResponse:
+    """Translate one stored chat message into the API response shape."""
+    return PlatformChatMessageResponse(
+        record_id=record.record_id,
+        channel_key=record.channel_key,
+        chat_id=record.chat_id,
+        external_message_id=record.external_message_id,
+        direction=record.direction if record.direction in {"inbound", "outbound"} else "inbound",
+        sender_id=record.sender_id,
+        sender_name=record.sender_name,
+        text=record.text,
+        message_type=record.message_type,
+        source=record.source,
+        status=record.status,
+        created_at=record.created_at,
+    )
+
+
+def ensure_runtime_callback_authorized(x_runtime_callback_token: str | None) -> None:
+    """Protect runtime callback routes when a callback token is configured."""
+    expected = get_settings().runtime_callback_token
+    if not expected:
+        return
+
+    if x_runtime_callback_token != expected:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing X-Runtime-Callback-Token.",
+        )
+
+
+@router.get("/chats", response_class=HTMLResponse)
+def chat_console_page() -> str:
+    """Render the platform inbox UI for monitoring and replying to chats."""
+    return """<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MINIGREENAPI | Чаты платформы</title>
+  <meta name="description" content="Мониторинг WhatsApp-чатов и ручные ответы из самой платформы." />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/brand.css?v=chat-20260514a" />
+</head>
+<body>
+  <div class="page-shell inbox-shell">
+    <div class="ambient ambient-left"></div>
+    <div class="ambient ambient-right"></div>
+    <header class="topbar connect-topbar">
+      <div class="brand-mark" aria-hidden="true">
+        <span class="brand-block"></span>
+        <span class="brand-arch"></span>
+        <span class="brand-arch brand-arch-secondary"></span>
+      </div>
+      <div class="brand-copy">
+        <span class="brand-label">MINIGREENAPI</span>
+        <span class="brand-subtitle">Platform Chats</span>
+      </div>
+      <nav class="nav-links">
+        <a href="/">Платформа</a>
+        <a href="/connect/whatsapp">Подключить WhatsApp</a>
+      </nav>
+    </header>
+
+    <main class="onboarding-main inbox-main">
+      <section class="onboarding-intro reveal is-visible">
+        <span class="eyebrow">Chat monitoring</span>
+        <h1>Чаты платформы и ручные ответы</h1>
+        <p class="hero-text">
+          Здесь можно видеть входящие сообщения, следить за новыми диалогами и отвечать клиентам прямо из платформы,
+          даже если поверх этой же линии работает отдельный бот или интеграция.
+        </p>
+      </section>
+
+      <section class="inbox-grid">
+        <aside class="wizard-card inbox-sidebar reveal is-visible">
+          <div class="inbox-sidebar-head">
+            <div>
+              <div class="card-label card-label-no-margin">Диалоги</div>
+              <h2 class="simple-connection-name inbox-title">Список чатов</h2>
+            </div>
+            <button class="button button-secondary inbox-refresh-button" id="conversation-refresh-btn" type="button">
+              Обновить
+            </button>
+          </div>
+
+          <div class="inbox-conversation-list" id="conversation-list">
+            <div class="empty-state-card">Пока нет сообщений. Как только в WhatsApp придет новый чат, он появится здесь.</div>
+          </div>
+        </aside>
+
+        <section class="wizard-card inbox-chat-panel reveal is-visible">
+          <div class="inbox-chat-head">
+            <div>
+              <div class="card-label card-label-no-margin">Открытый чат</div>
+              <h2 class="simple-connection-name inbox-chat-name" id="active-chat-name">Выберите диалог</h2>
+              <p class="section-copy section-copy-tight" id="active-chat-meta">
+                Откройте чат слева, чтобы видеть историю сообщений и отвечать вручную.
+              </p>
+            </div>
+            <div class="inbox-chat-badges">
+              <span class="pill" id="chat-channel-pill">platform-main</span>
+              <span class="pill" id="chat-status-pill">Нет активного чата</span>
+            </div>
+          </div>
+
+          <div class="inbox-message-stream" id="message-stream">
+            <div class="empty-state-card">
+              История чата появится здесь после выбора диалога.
+            </div>
+          </div>
+
+          <div class="inbox-composer">
+            <label class="inbox-composer-label" for="manual-reply-input">Ответить из платформы</label>
+            <textarea id="manual-reply-input" rows="4" placeholder="Введите сообщение для клиента..."></textarea>
+            <div class="inbox-composer-actions">
+              <button class="button button-secondary" id="message-refresh-btn" type="button">Обновить чат</button>
+              <button class="button button-primary" id="send-reply-btn" type="button">Отправить сообщение</button>
+            </div>
+          </div>
+
+          <div class="result-console-shell inbox-console-shell">
+            <div class="status-kicker">Лог консоли</div>
+            <pre class="result-console" id="chat-console">Чат-монитор готов.</pre>
+          </div>
+        </section>
+      </section>
+    </main>
+  </div>
+  <script src="/static/chat-monitor.js?v=chat-20260514a"></script>
+</body>
+</html>"""
+
+
+@api_router.post("/api/v1/runtime/incoming")
+def receive_runtime_incoming_message(
+    payload: RuntimeIncomingMessageRequest,
+    x_runtime_callback_token: str | None = Header(default=None),
+) -> dict[str, object]:
+    """Persist one inbound WhatsApp event posted by the local runtime."""
+    ensure_runtime_callback_authorized(x_runtime_callback_token)
+    message = get_chat_store_service().store_incoming_message(payload.channel_key, payload.model_dump())
+    return {
+        "ok": True,
+        "record_id": message.record_id,
+    }
+
+
+@api_router.get("/api/v1/platform/chats/conversations", response_model=list[PlatformConversationResponse])
+def list_platform_conversations(channel_key: str | None = None) -> list[PlatformConversationResponse]:
+    """Return the latest chat conversations for the platform inbox."""
+    resolved_channel = channel_key or get_settings().runtime_platform_channel_key
+    conversations = get_chat_store_service().list_conversations(resolved_channel)
+    return [serialize_conversation(conversation) for conversation in conversations]
+
+
+@api_router.get("/api/v1/platform/chats/{chat_id}/messages", response_model=list[PlatformChatMessageResponse])
+def list_platform_chat_messages(
+    chat_id: str,
+    channel_key: str | None = None,
+    limit: int = 200,
+) -> list[PlatformChatMessageResponse]:
+    """Return one chat timeline from the platform inbox."""
+    resolved_channel = channel_key or get_settings().runtime_platform_channel_key
+    messages = get_chat_store_service().list_messages(resolved_channel, chat_id, limit=limit)
+    return [serialize_message(message) for message in messages]
+
+
+@api_router.post("/api/v1/platform/chats/{chat_id}/read")
+def mark_platform_conversation_read(chat_id: str, channel_key: str | None = None) -> dict[str, object]:
+    """Clear unread counters for one conversation."""
+    resolved_channel = channel_key or get_settings().runtime_platform_channel_key
+    get_chat_store_service().mark_conversation_read(resolved_channel, chat_id)
+    return {"ok": True}
+
+
+@api_router.post("/api/v1/platform/chats/{chat_id}/send", response_model=PlatformChatSendResponse)
+def send_platform_chat_reply(
+    chat_id: str,
+    payload: PlatformChatSendRequest,
+    channel_key: str | None = None,
+) -> PlatformChatSendResponse:
+    """Send one manual operator message through the platform runtime."""
+    resolved_channel = channel_key or get_settings().runtime_platform_channel_key
+    runtime_service = get_self_hosted_runtime_service()
+
+    try:
+        runtime_payload = runtime_service.send_message(resolved_channel, chat_id, payload.text)
+    except SelfHostedRuntimeServiceError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+    external_message_id = str(runtime_payload.get("id_message", "")).strip()
+    message = get_chat_store_service().store_outgoing_message(
+        channel_key=resolved_channel,
+        chat_id=chat_id,
+        text=payload.text,
+        external_message_id=external_message_id,
+        source="operator",
+        sender_name="Platform operator",
+        status="sent",
+        raw_payload=runtime_payload,
+    )
+    get_chat_store_service().mark_conversation_read(resolved_channel, chat_id)
+    return PlatformChatSendResponse(
+        channel_key=resolved_channel,
+        chat_id=chat_id,
+        id_message=external_message_id,
+        message=serialize_message(message),
+    )

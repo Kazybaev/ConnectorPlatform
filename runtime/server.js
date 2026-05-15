@@ -9,6 +9,8 @@ app.use(express.json({ limit: "2mb" }));
 
 const runtimePort = Number(process.env.RUNTIME_PORT || "8011");
 const runtimeToken = String(process.env.RUNTIME_TOKEN || "").trim();
+const runtimePlatformCallbackUrl = String(process.env.RUNTIME_PLATFORM_CALLBACK_URL || "").trim();
+const runtimePlatformCallbackToken = String(process.env.RUNTIME_PLATFORM_CALLBACK_TOKEN || "").trim();
 const sessionRoot = path.resolve(__dirname, "..", "data", "runtime", "sessions");
 
 fs.mkdirSync(sessionRoot, { recursive: true });
@@ -103,6 +105,74 @@ function serializeState(state) {
     last_message_at: state.lastMessageAt,
     last_error: state.lastError
   };
+}
+
+function normalizeIncomingText(message) {
+  const body = String(message.body || "").trim();
+  if (body) {
+    return body;
+  }
+
+  const type = String(message.type || "").trim().toLowerCase();
+  if (!type || type === "text") {
+    return "";
+  }
+
+  return `[${type}]`;
+}
+
+async function postIncomingMessageToPlatform(state, message) {
+  if (!runtimePlatformCallbackUrl) {
+    return;
+  }
+
+  const text = normalizeIncomingText(message);
+  const contact = await message.getContact().catch(() => null);
+  const senderName = String(
+    contact?.pushname ||
+    contact?.name ||
+    contact?.shortName ||
+    message?._data?.notifyName ||
+    ""
+  ).trim();
+
+  const payload = {
+    channel_key: state.channelId,
+    channel_name: state.displayName,
+    message: {
+      external_message_id: String(message.id?._serialized || "").trim(),
+      chat_id: String(message.from || "").trim(),
+      sender_id: String(message.author || message.from || "").trim(),
+      sender_name: senderName,
+      text,
+      message_type: String(message.type || "text").trim() || "text",
+      timestamp: message.timestamp || null,
+      from_me: Boolean(message.fromMe)
+    }
+  };
+
+  const headers = {
+    "Content-Type": "application/json"
+  };
+  if (runtimePlatformCallbackToken) {
+    headers["X-Runtime-Callback-Token"] = runtimePlatformCallbackToken;
+  }
+
+  try {
+    const response = await fetch(runtimePlatformCallbackUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      state.lastError = detail
+        ? `Platform inbox callback failed: ${detail}`
+        : `Platform inbox callback failed with status ${response.status}.`;
+    }
+  } catch (error) {
+    state.lastError = `Platform inbox callback failed: ${sanitizeError(error)}`;
+  }
 }
 
 async function waitForRenderableState(state, timeoutMs = 15000) {
@@ -206,8 +276,9 @@ async function attachClientEventHandlers(state, client) {
     await refreshProfile(state);
   });
 
-  client.on("message", async () => {
+  client.on("message", async (message) => {
     state.lastMessageAt = nowIso();
+    await postIncomingMessageToPlatform(state, message);
   });
 
   client.on("auth_failure", (message) => {

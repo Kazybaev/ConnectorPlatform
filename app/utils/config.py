@@ -48,6 +48,7 @@ class Settings(BaseModel):
     runtime_service_base_url: str = "http://127.0.0.1:8011"
     runtime_service_port: int = 8011
     runtime_service_token: str = ""
+    runtime_callback_token: str = ""
     runtime_service_autostart: bool = True
     runtime_platform_channel_key: str = "platform-main"
     simple_connect_name: str = "Platform WhatsApp"
@@ -161,6 +162,7 @@ class Settings(BaseModel):
                 )
             ),
             runtime_service_token=os.getenv("RUNTIME_SERVICE_TOKEN", "").strip(),
+            runtime_callback_token=os.getenv("RUNTIME_CALLBACK_TOKEN", os.getenv("RUNTIME_SERVICE_TOKEN", "")).strip(),
             runtime_service_autostart=os.getenv("RUNTIME_SERVICE_AUTOSTART", "true").strip().lower()
             in {"1", "true", "yes", "on"},
             runtime_platform_channel_key=os.getenv(

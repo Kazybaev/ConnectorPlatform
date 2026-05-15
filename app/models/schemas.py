@@ -306,6 +306,79 @@ class SendProjectMessageResponse(BaseModel):
     id_message: str
 
 
+class PlatformConversationResponse(BaseModel):
+    """Conversation summary shown in the platform inbox."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    channel_key: str
+    chat_id: str
+    display_name: str = ""
+    phone: str = ""
+    avatar_url: str = ""
+    last_message_text: str = ""
+    last_message_at: str = ""
+    last_direction: Literal["inbound", "outbound"] = "inbound"
+    last_sender_name: str = ""
+    unread_count: int = 0
+
+
+class PlatformChatMessageResponse(BaseModel):
+    """One message stored in the platform inbox timeline."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    record_id: str
+    channel_key: str
+    chat_id: str
+    external_message_id: str = ""
+    direction: Literal["inbound", "outbound"]
+    sender_id: str = ""
+    sender_name: str = ""
+    text: str = ""
+    message_type: str = "text"
+    source: str = "runtime"
+    status: str = ""
+    created_at: str
+
+
+class PlatformChatSendRequest(BaseModel):
+    """Manual operator reply sent from the platform inbox."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    text: str = Field(..., min_length=1, max_length=20000)
+
+    @field_validator("text")
+    @classmethod
+    def strip_platform_chat_send_text(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Message text must not be empty.")
+        return cleaned
+
+
+class PlatformChatSendResponse(BaseModel):
+    """Result of one manual operator reply."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    channel_key: str
+    chat_id: str
+    id_message: str
+    message: PlatformChatMessageResponse
+
+
+class RuntimeIncomingMessageRequest(BaseModel):
+    """Inbound event posted by the local WhatsApp runtime."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    channel_key: str = Field(..., min_length=1)
+    channel_name: str = ""
+    message: dict[str, Any] = Field(default_factory=dict)
+
+
 class HealthResponse(BaseModel):
     """Health-check response payload."""
 
