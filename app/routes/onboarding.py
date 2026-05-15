@@ -132,22 +132,16 @@ def whatsapp_connect_page() -> str:
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/brand.css?v=connect-20260514b" />
+  <link rel="stylesheet" href="/static/brand.css?v=community-20260515d" />
 </head>
 <body>
   <div class="page-shell onboarding-shell">
     <div class="ambient ambient-left"></div>
     <div class="ambient ambient-right"></div>
     <header class="topbar connect-topbar">
-      <div class="brand-mark" aria-hidden="true">
-        <span class="brand-block"></span>
-        <span class="brand-arch"></span>
-        <span class="brand-arch brand-arch-secondary"></span>
-      </div>
-      <div class="brand-copy">
-        <span class="brand-label">MINIGREENAPI</span>
-        <span class="brand-subtitle">Platform Core</span>
-      </div>
+      <a class="brand-home" href="/" aria-label="COMMUNITY">
+        <img class="brand-logo-image" src="/static/community-mark-clean.svg?v=community-20260515d" alt="COMMUNITY mark" />
+      </a>
       <nav class="nav-links">
         <a href="/chats">Чаты</a>
         <a href="/bots">Боты</a>

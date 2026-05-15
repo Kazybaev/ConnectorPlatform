@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 92" fill="none">
+  <defs>
+    <linearGradient id="communityMarkFill" x1="20" y1="10" x2="180" y2="84" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#d6f4ff" />
+      <stop offset="0.52" stop-color="#8ddcff" />
+      <stop offset="1" stop-color="#37b0ff" />
+    </linearGradient>
+  </defs>
+  <path
+    fill="url(#communityMarkFill)"
+    d="M8 70V28h18v42H8Zm18-42h54l18 18v24H80V46H26V28Zm28-18h52l28 28v32h-18V46L98 28H54V10Zm100 0h52l28 28v32h-18V46l-18-18h-44V10Z"
+  />
+</svg>

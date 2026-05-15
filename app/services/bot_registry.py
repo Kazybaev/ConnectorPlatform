@@ -238,11 +238,44 @@ class BotRegistryService:
         configured_payload = self._build_default_bot_payload(
             endpoint_url=base_url or record.endpoint_url,
             authorization_header=f"Bearer {api_key}" if api_key else record.authorization_header,
+            enabled=record.enabled,
         )
         self._update_bot_record(record.id, configured_payload, is_default_template=True)
         refreshed = self.get_bot(record.id)
         if refreshed is None:
             raise RuntimeError("Default bot was updated but could not be reloaded.")
+        return refreshed
+
+    def set_bot_enabled(self, bot_id: str, enabled: bool) -> BotRecord:
+        """Activate or deactivate one registered bot."""
+        record = self.get_bot(bot_id)
+        if record is None:
+            raise ValueError("Bot not found.")
+
+        now = utc_now_iso()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE platform_bots
+                SET enabled = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (1 if enabled else 0, now, bot_id),
+            )
+            if not enabled:
+                connection.execute(
+                    """
+                    UPDATE platform_bot_connections
+                    SET enabled = 0, updated_at = ?
+                    WHERE bot_id = ?
+                    """,
+                    (now, bot_id),
+                )
+            connection.commit()
+
+        refreshed = self.get_bot(bot_id)
+        if refreshed is None:
+            raise RuntimeError("Bot activation state was saved but could not be reloaded.")
         return refreshed
 
     def connect_bot_to_channel(self, bot_id: str, channel_key: str) -> BotRecord:
@@ -397,6 +430,7 @@ class BotRegistryService:
         *,
         endpoint_url: str = "https://api.dify.ai/v1",
         authorization_header: str = "Bearer YOUR_DIFY_API_KEY",
+        enabled: bool = True,
     ) -> BotCreateRequest:
         configured_base_url = endpoint_url.rstrip("/") if endpoint_url else "https://api.dify.ai/v1"
         return BotCreateRequest(
@@ -416,7 +450,7 @@ class BotRegistryService:
             ),
             linked_project_id="",
             linked_channel_key=self._settings.runtime_platform_channel_key,
-            enabled=True,
+            enabled=enabled,
             variables=[
                 BotVariableDefinition(
                     key="DIFY_BASE_URL",

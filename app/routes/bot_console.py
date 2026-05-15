@@ -188,22 +188,16 @@ def bot_console_page() -> str:
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/brand.css?v=bots-20260515b" />
+  <link rel="stylesheet" href="/static/brand.css?v=community-20260515e" />
 </head>
 <body>
   <div class="page-shell onboarding-shell">
     <div class="ambient ambient-left"></div>
     <div class="ambient ambient-right"></div>
     <header class="topbar connect-topbar">
-      <div class="brand-mark" aria-hidden="true">
-        <span class="brand-block"></span>
-        <span class="brand-arch"></span>
-        <span class="brand-arch brand-arch-secondary"></span>
-      </div>
-      <div class="brand-copy">
-        <span class="brand-label">MINIGREENAPI</span>
-        <span class="brand-subtitle">Bot Registry</span>
-      </div>
+      <a class="brand-home" href="/" aria-label="COMMUNITY">
+        <img class="brand-logo-image" src="/static/community-mark-clean.svg?v=community-20260515d" alt="COMMUNITY mark" />
+      </a>
       <nav class="nav-links">
         <a href="/">Платформа</a>
         <a href="/chats">Чаты</a>
@@ -277,6 +271,8 @@ def bot_console_page() -> str:
           <div class="simple-actions bot-live-actions">
             <button class="button button-primary" id="connect-test-bot-btn" type="button" disabled>Подключить тестового бота</button>
             <button class="button button-secondary" id="disconnect-test-bot-btn" type="button" disabled>Отключить тестового бота</button>
+            <button class="button button-secondary" id="activate-bot-btn" type="button" disabled>Активировать бота</button>
+            <button class="button button-secondary" id="deactivate-bot-btn" type="button" disabled>Деактивировать бота</button>
           </div>
 
           <div class="bot-description-card" id="bot-description-card">
@@ -440,7 +436,7 @@ def bot_console_page() -> str:
       </section>
     </main>
   </div>
-  <script src="/static/bot-studio.js?v=bots-20260515b"></script>
+  <script src="/static/bot-studio.js?v=bots-20260515c"></script>
 </body>
 </html>"""
 
@@ -513,3 +509,23 @@ def disconnect_platform_test_bot(bot_id: str) -> BotTestConnectionResponse:
         channel_key=settings.runtime_platform_channel_key,
         enabled=False,
     )
+
+
+@api_router.post("/api/v1/platform/bots/{bot_id}/activate", status_code=status.HTTP_200_OK)
+def activate_platform_bot(bot_id: str) -> dict[str, object]:
+    """Enable one registered bot in the catalog."""
+    try:
+        record = get_bot_registry_service().set_bot_enabled(bot_id, True)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return {"ok": True, "bot_id": record.id, "enabled": record.enabled}
+
+
+@api_router.post("/api/v1/platform/bots/{bot_id}/deactivate", status_code=status.HTTP_200_OK)
+def deactivate_platform_bot(bot_id: str) -> dict[str, object]:
+    """Disable one registered bot in the catalog and disconnect it from active channels."""
+    try:
+        record = get_bot_registry_service().set_bot_enabled(bot_id, False)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return {"ok": True, "bot_id": record.id, "enabled": record.enabled}

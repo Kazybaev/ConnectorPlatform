@@ -24,6 +24,8 @@ const elements = {
   outboundExample: document.getElementById("bot-outbound-example"),
   connectTestBotBtn: document.getElementById("connect-test-bot-btn"),
   disconnectTestBotBtn: document.getElementById("disconnect-test-bot-btn"),
+  activateBotBtn: document.getElementById("activate-bot-btn"),
+  deactivateBotBtn: document.getElementById("deactivate-bot-btn"),
 };
 
 function escapeHtml(value) {
@@ -123,7 +125,7 @@ function renderBotList() {
     .map((bot) => {
       const isActive = bot.id === state.activeBotId;
       const statusClass = bot.enabled ? "status-badge-connected" : "status-badge-warning";
-      const statusText = bot.enabled ? "Активен" : "Черновик";
+      const statusText = bot.enabled ? "Активен" : "Деактивирован";
       const badgeText = bot.is_default_template ? "Default template" : "Custom bot";
       const connectionPill = bot.test_connected ? '<span class="pill">test connected</span>' : "";
 
@@ -161,13 +163,35 @@ function renderBotList() {
 
 function updateConnectionButtons(bot) {
   const hasBot = Boolean(bot && bot.id);
+  const enabled = Boolean(bot?.enabled);
   const connected = Boolean(bot?.test_connected);
+
   if (elements.connectTestBotBtn) {
-    elements.connectTestBotBtn.disabled = !hasBot || connected;
-    elements.connectTestBotBtn.textContent = connected ? "Тестовый бот уже подключён" : "Подключить тестового бота";
+    elements.connectTestBotBtn.disabled = !hasBot || !enabled || connected;
+    if (!hasBot) {
+      elements.connectTestBotBtn.textContent = "Подключить тестового бота";
+    } else if (!enabled) {
+      elements.connectTestBotBtn.textContent = "Сначала активируйте бота";
+    } else if (connected) {
+      elements.connectTestBotBtn.textContent = "Тестовый бот уже подключён";
+    } else {
+      elements.connectTestBotBtn.textContent = "Подключить тестового бота";
+    }
   }
+
   if (elements.disconnectTestBotBtn) {
     elements.disconnectTestBotBtn.disabled = !hasBot || !connected;
+    elements.disconnectTestBotBtn.textContent = "Отключить тестового бота";
+  }
+
+  if (elements.activateBotBtn) {
+    elements.activateBotBtn.disabled = !hasBot || enabled;
+    elements.activateBotBtn.textContent = "Активировать бота";
+  }
+
+  if (elements.deactivateBotBtn) {
+    elements.deactivateBotBtn.disabled = !hasBot || !enabled;
+    elements.deactivateBotBtn.textContent = "Деактивировать бота";
   }
 }
 
@@ -236,7 +260,11 @@ function renderBotDetail(bot) {
   renderBotList();
 
   elements.detailName.textContent = bot.name || "Без названия";
-  elements.detailBadge.textContent = bot.test_connected ? "Подключён к WhatsApp" : bot.enabled ? "Готов" : "Черновик";
+  elements.detailBadge.textContent = bot.test_connected
+    ? "Подключён к WhatsApp"
+    : bot.enabled
+      ? "Готов"
+      : "Деактивирован";
   elements.detailBadge.className = `status-badge ${
     bot.test_connected ? "status-badge-connected" : bot.enabled ? "status-badge-pending" : "status-badge-warning"
   }`;
@@ -247,9 +275,11 @@ function renderBotDetail(bot) {
   elements.descriptionCard.textContent = bot.workflow_summary || bot.description || "Описание пока не заполнено.";
   elements.variableList.innerHTML = renderDetailList(bot.variables || [], "variables");
   elements.apiList.innerHTML = renderDetailList(bot.api_bindings || [], "api");
-  elements.instructionList.innerHTML = (bot.platform_instructions || [])
-    .map((item) => `<article class="instruction-card">${escapeHtml(item)}</article>`)
-    .join("");
+  elements.instructionList.innerHTML = (bot.platform_instructions || []).length
+    ? (bot.platform_instructions || [])
+        .map((item) => `<article class="instruction-card">${escapeHtml(item)}</article>`)
+        .join("")
+    : '<div class="empty-state-card">Инструкция пока не заполнена.</div>';
   elements.envExample.textContent = formatEnvExample(bot.env_example);
   elements.inboundExample.textContent = prettifyJson(bot.inbound_example);
   elements.outboundExample.textContent = prettifyJson(bot.outbound_example);
@@ -278,10 +308,7 @@ async function loadBotList({ preserveSelection = true } = {}) {
     }
 
     const currentId = preserveSelection ? state.activeBotId : null;
-    const nextActiveId =
-      currentId && state.bots.some((bot) => bot.id === currentId)
-        ? currentId
-        : state.bots[0].id;
+    const nextActiveId = currentId && state.bots.some((bot) => bot.id === currentId) ? currentId : state.bots[0].id;
     await loadBotDetail(nextActiveId);
   } catch (error) {
     elements.botList.innerHTML = `<div class="empty-state-card">Не удалось загрузить реестр ботов: ${escapeHtml(error.message)}</div>`;
@@ -338,11 +365,54 @@ async function disconnectTestBot() {
     await loadBotList({ preserveSelection: true });
   } catch (error) {
     elements.descriptionCard.textContent = `Не удалось отключить тестового бота: ${error.message}`;
-    elements.disconnectTestBotBtn.textContent = "Отключить тестового бота";
     updateConnectionButtons(state.activeBot);
   } finally {
     if (elements.disconnectTestBotBtn) {
       elements.disconnectTestBotBtn.textContent = "Отключить тестового бота";
+    }
+  }
+}
+
+async function activateBot() {
+  if (!state.activeBot?.id || !elements.activateBotBtn) {
+    return;
+  }
+
+  elements.activateBotBtn.disabled = true;
+  elements.activateBotBtn.textContent = "Активируем...";
+  try {
+    await requestJson(`/api/v1/platform/bots/${encodeURIComponent(state.activeBot.id)}/activate`, {
+      method: "POST",
+    });
+    await loadBotList({ preserveSelection: true });
+  } catch (error) {
+    elements.descriptionCard.textContent = `Не удалось активировать бота: ${error.message}`;
+    updateConnectionButtons(state.activeBot);
+  } finally {
+    if (elements.activateBotBtn) {
+      elements.activateBotBtn.textContent = "Активировать бота";
+    }
+  }
+}
+
+async function deactivateBot() {
+  if (!state.activeBot?.id || !elements.deactivateBotBtn) {
+    return;
+  }
+
+  elements.deactivateBotBtn.disabled = true;
+  elements.deactivateBotBtn.textContent = "Деактивируем...";
+  try {
+    await requestJson(`/api/v1/platform/bots/${encodeURIComponent(state.activeBot.id)}/deactivate`, {
+      method: "POST",
+    });
+    await loadBotList({ preserveSelection: true });
+  } catch (error) {
+    elements.descriptionCard.textContent = `Не удалось деактивировать бота: ${error.message}`;
+    updateConnectionButtons(state.activeBot);
+  } finally {
+    if (elements.deactivateBotBtn) {
+      elements.deactivateBotBtn.textContent = "Деактивировать бота";
     }
   }
 }
@@ -425,6 +495,12 @@ function wireEvents() {
   });
   elements.disconnectTestBotBtn?.addEventListener("click", () => {
     disconnectTestBot();
+  });
+  elements.activateBotBtn?.addEventListener("click", () => {
+    activateBot();
+  });
+  elements.deactivateBotBtn?.addEventListener("click", () => {
+    deactivateBot();
   });
   elements.createForm?.addEventListener("submit", handleCreateBot);
 }
