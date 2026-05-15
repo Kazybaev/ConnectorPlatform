@@ -594,7 +594,8 @@ body::before {
 }
 
 .stack-form input,
-.stack-form textarea {
+.stack-form textarea,
+.stack-form select {
   width: 100%;
   border: 1px solid rgba(119, 212, 255, 0.16);
   border-radius: 18px;
@@ -607,7 +608,8 @@ body::before {
 }
 
 .stack-form input:focus,
-.stack-form textarea:focus {
+.stack-form textarea:focus,
+.stack-form select:focus {
   border-color: var(--line-strong);
   box-shadow: 0 0 0 4px rgba(119, 212, 255, 0.08);
   transform: translateY(-1px);
@@ -1268,8 +1270,179 @@ body::before {
   background: rgba(7, 18, 42, 0.62);
 }
 
+.bot-studio-main {
+  padding-bottom: 42px;
+}
+
+.bot-studio-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.82fr) minmax(0, 1.18fr);
+  gap: 22px;
+  align-items: start;
+  margin-top: 28px;
+}
+
+.bot-panel-head,
+.bot-list-card-top,
+.bot-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.bot-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.bot-section-title {
+  max-width: none;
+}
+
+.bot-catalog-list {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.bot-list-card {
+  width: 100%;
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  text-align: left;
+  border-radius: 24px;
+  border: 1px solid rgba(119, 212, 255, 0.1);
+  background: rgba(8, 20, 48, 0.76);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 180ms ease, transform 180ms ease, box-shadow 180ms ease;
+}
+
+.bot-list-card:hover,
+.bot-list-card.is-active {
+  border-color: rgba(119, 212, 255, 0.28);
+  transform: translateY(-1px);
+  box-shadow: 0 18px 38px rgba(2, 8, 22, 0.22);
+}
+
+.bot-list-card strong {
+  display: block;
+  font-size: 1rem;
+}
+
+.bot-list-card span,
+.bot-list-card p {
+  color: var(--muted);
+}
+
+.bot-list-card p {
+  margin: 0;
+  line-height: 1.65;
+}
+
+.bot-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.bot-summary-grid {
+  margin-top: 8px;
+}
+
+.bot-description-card {
+  margin-top: 18px;
+  padding: 18px;
+  border-radius: 24px;
+  border: 1px solid rgba(119, 212, 255, 0.1);
+  background:
+    linear-gradient(135deg, rgba(184, 237, 255, 0.06), rgba(51, 165, 255, 0.05)),
+    rgba(7, 18, 42, 0.78);
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.bot-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.bot-detail-column {
+  display: grid;
+  gap: 12px;
+}
+
+.bot-data-list,
+.instruction-list,
+.bot-instruction-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.bot-data-card,
+.instruction-card {
+  padding: 16px;
+  border-radius: 22px;
+  border: 1px solid rgba(119, 212, 255, 0.08);
+  background: rgba(8, 20, 48, 0.76);
+}
+
+.bot-data-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.bot-data-card p {
+  margin: 10px 0;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.bot-data-card code {
+  display: block;
+  padding: 10px 12px;
+  border-radius: 16px;
+  background: rgba(4, 12, 30, 0.82);
+  color: var(--cyan-bright);
+  overflow-wrap: anywhere;
+}
+
+.instruction-card {
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.bot-builder-grid {
+  margin-top: 22px;
+}
+
+.bot-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+}
+
+.bot-checkbox-row input {
+  width: 18px;
+  height: 18px;
+}
+
 @media (max-width: 1080px) {
+  .bot-studio-grid,
   .inbox-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .bot-detail-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1280,6 +1453,9 @@ body::before {
 }
 
 @media (max-width: 720px) {
+  .bot-panel-head,
+  .bot-panel-actions,
+  .bot-detail-head,
   .inbox-sidebar-head,
   .inbox-chat-head,
   .inbox-composer-actions {

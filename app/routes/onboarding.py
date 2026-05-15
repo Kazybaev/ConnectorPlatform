@@ -150,6 +150,7 @@ def whatsapp_connect_page() -> str:
       </div>
       <nav class="nav-links">
         <a href="/chats">Чаты</a>
+        <a href="/bots">Боты</a>
         <a href="/">Платформа</a>
       </nav>
     </header>

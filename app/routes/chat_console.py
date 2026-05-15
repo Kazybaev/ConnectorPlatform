@@ -10,6 +10,7 @@ from app.models.schemas import (
     PlatformConversationResponse,
     RuntimeIncomingMessageRequest,
 )
+from app.services.platform_bot_runtime import PlatformBotRuntimeError, get_platform_bot_runtime_service
 from app.services.chat_store import ChatConversationRecord, ChatMessageRecord, get_chat_store_service
 from app.services.self_hosted_runtime_service import SelfHostedRuntimeServiceError, get_self_hosted_runtime_service
 from app.utils.config import get_settings
@@ -96,6 +97,7 @@ def chat_console_page() -> str:
       </div>
       <nav class="nav-links">
         <a href="/">Платформа</a>
+        <a href="/bots">Боты</a>
         <a href="/connect/whatsapp">Подключить WhatsApp</a>
       </nav>
     </header>
@@ -178,9 +180,18 @@ def receive_runtime_incoming_message(
     """Persist one inbound WhatsApp event posted by the local runtime."""
     ensure_runtime_callback_authorized(x_runtime_callback_token)
     message = get_chat_store_service().store_incoming_message(payload.channel_key, payload.model_dump())
+    bot_result: dict[str, object] = {"handled": False, "reason": "not_processed"}
+    try:
+        bot_result = get_platform_bot_runtime_service().process_runtime_incoming_message(
+            payload.channel_key,
+            payload.model_dump(),
+        )
+    except PlatformBotRuntimeError as exc:
+        bot_result = {"handled": False, "reason": str(exc)}
     return {
         "ok": True,
         "record_id": message.record_id,
+        "bot_result": bot_result,
     }
 
 

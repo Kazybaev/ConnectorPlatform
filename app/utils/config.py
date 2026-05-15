@@ -52,6 +52,8 @@ class Settings(BaseModel):
     runtime_service_autostart: bool = True
     runtime_platform_channel_key: str = "platform-main"
     simple_connect_name: str = "Platform WhatsApp"
+    default_bot_dify_base_url: str = ""
+    default_bot_dify_api_key: str = ""
 
     @field_validator("log_level")
     @classmethod
@@ -172,6 +174,14 @@ class Settings(BaseModel):
             simple_connect_name=os.getenv(
                 "SIMPLE_CONNECT_NAME",
                 cls.model_fields["simple_connect_name"].default,
+            ).strip(),
+            default_bot_dify_base_url=os.getenv(
+                "DEFAULT_BOT_DIFY_BASE_URL",
+                cls.model_fields["default_bot_dify_base_url"].default,
+            ).strip().rstrip("/"),
+            default_bot_dify_api_key=os.getenv(
+                "DEFAULT_BOT_DIFY_API_KEY",
+                cls.model_fields["default_bot_dify_api_key"].default,
             ).strip(),
         )
 

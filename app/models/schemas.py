@@ -369,6 +369,128 @@ class PlatformChatSendResponse(BaseModel):
     message: PlatformChatMessageResponse
 
 
+class BotVariableDefinition(BaseModel):
+    """One runtime variable that a bot expects from the platform setup."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    key: str = Field(..., min_length=1, max_length=120, pattern=r"^[A-Z][A-Z0-9_]*$")
+    required: bool = True
+    default_value: str = Field(default="", max_length=600)
+    description: str = Field(default="", max_length=400)
+
+    @field_validator("key")
+    @classmethod
+    def normalize_variable_key(cls, value: str) -> str:
+        cleaned = value.strip().upper()
+        if not cleaned:
+            raise ValueError("Variable key must not be empty.")
+        return cleaned
+
+    @field_validator("default_value", "description")
+    @classmethod
+    def strip_variable_text_fields(cls, value: str) -> str:
+        return value.strip()
+
+
+class BotApiBinding(BaseModel):
+    """One external API or webhook connected to a bot."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = Field(..., min_length=1, max_length=120)
+    kind: Literal["http", "n8n", "crm", "internal", "custom"] = "http"
+    endpoint_url: str = Field(default="", max_length=500)
+    notes: str = Field(default="", max_length=600)
+
+    @field_validator("name", "endpoint_url", "notes")
+    @classmethod
+    def strip_api_binding_fields(cls, value: str) -> str:
+        return value.strip()
+
+
+class BotCreateRequest(BaseModel):
+    """Create one reusable bot integration managed by the platform."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = Field(..., min_length=2, max_length=120)
+    slug: str = Field(..., min_length=2, max_length=64, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    description: str = Field(default="", max_length=600)
+    engine_type: Literal["dify", "n8n", "webhook", "custom"] = "custom"
+    endpoint_url: str = Field(default="", max_length=500)
+    authorization_header: str = Field(default="", max_length=500)
+    owner_label: str = Field(default="", max_length=120)
+    workflow_summary: str = Field(default="", max_length=2000)
+    linked_project_id: str = Field(default="", max_length=80)
+    linked_channel_key: str = Field(default="", max_length=120)
+    enabled: bool = True
+    variables: list[BotVariableDefinition] = Field(default_factory=list)
+    api_bindings: list[BotApiBinding] = Field(default_factory=list)
+
+    @field_validator(
+        "name",
+        "slug",
+        "description",
+        "endpoint_url",
+        "authorization_header",
+        "owner_label",
+        "workflow_summary",
+        "linked_project_id",
+        "linked_channel_key",
+    )
+    @classmethod
+    def strip_bot_create_fields(cls, value: str) -> str:
+        return value.strip()
+
+
+class BotSummaryResponse(BaseModel):
+    """Compact bot card shown in the platform bot catalog."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    name: str
+    slug: str
+    description: str
+    engine_type: Literal["dify", "n8n", "webhook", "custom"]
+    endpoint_url: str = ""
+    owner_label: str = ""
+    linked_project_id: str = ""
+    linked_channel_key: str = ""
+    enabled: bool
+    is_default_template: bool = False
+    test_connected: bool = False
+    connected_channel_keys: list[str] = Field(default_factory=list)
+    variable_count: int = 0
+    api_binding_count: int = 0
+    created_at: str
+    updated_at: str
+
+
+class BotDetailResponse(BotSummaryResponse):
+    """Detailed bot configuration with setup guidance for platform operators."""
+
+    authorization_header: str = ""
+    workflow_summary: str = ""
+    variables: list[BotVariableDefinition] = Field(default_factory=list)
+    api_bindings: list[BotApiBinding] = Field(default_factory=list)
+    platform_instructions: list[str] = Field(default_factory=list)
+    env_example: dict[str, str] = Field(default_factory=dict)
+    inbound_example: dict[str, Any] = Field(default_factory=dict)
+    outbound_example: dict[str, Any] = Field(default_factory=dict)
+
+
+class BotTestConnectionResponse(BaseModel):
+    """Result of connecting or disconnecting one test bot to the platform channel."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    bot_id: str
+    channel_key: str
+    enabled: bool
+
+
 class RuntimeIncomingMessageRequest(BaseModel):
     """Inbound event posted by the local WhatsApp runtime."""
 

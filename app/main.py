@@ -13,12 +13,15 @@ from fastapi.staticfiles import StaticFiles
 from app.routes.health import router as health_router
 from app.routes.chat_console import api_router as chat_console_api_router
 from app.routes.chat_console import router as chat_console_router
+from app.routes.bot_console import api_router as bot_console_api_router
+from app.routes.bot_console import router as bot_console_router
 from app.routes.onboarding import api_router as onboarding_api_router
 from app.routes.onboarding import router as onboarding_router
 from app.routes.projects import admin_router, project_router
 from app.routes.site import router as site_router
 from app.routes.upload import router as upload_router
 from app.services.chat_store import get_chat_store_service
+from app.services.bot_registry import get_bot_registry_service
 from app.services.project_registry import get_project_registry_service
 from app.utils.config import get_settings
 from app.utils.logging import configure_logging
@@ -34,6 +37,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     logger.info("Starting %s", settings.app_name)
     get_project_registry_service()
     get_chat_store_service()
+    get_bot_registry_service()
     yield
     logger.info("Stopping %s", settings.app_name)
 
@@ -65,6 +69,8 @@ app.include_router(onboarding_router)
 app.include_router(onboarding_api_router)
 app.include_router(chat_console_router)
 app.include_router(chat_console_api_router)
+app.include_router(bot_console_router)
+app.include_router(bot_console_api_router)
 
 
 @app.exception_handler(Exception)

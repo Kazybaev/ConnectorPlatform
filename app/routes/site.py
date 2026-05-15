@@ -39,6 +39,7 @@ def landing_page() -> str:
         <a href="#platform">Платформа</a>
         <a href="#flow">Как это работает</a>
         <a href="#contract">Контракт</a>
+        <a href="/bots">Боты</a>
         <a href="/connect/whatsapp">Connect WA</a>
         <a href="/docs">API Docs</a>
       </nav>
@@ -56,6 +57,7 @@ def landing_page() -> str:
           </p>
           <div class="hero-actions">
             <a class="button button-primary" href="/connect/whatsapp">Подключить WhatsApp</a>
+            <a class="button button-secondary" href="/bots">Открыть ботов</a>
             <a class="button button-secondary" href="/docs">Открыть OpenAPI</a>
             <a class="button button-secondary" href="#contract">Смотреть контракт интеграции</a>
           </div>
