@@ -126,6 +126,8 @@ class SelfHostedRuntimeService:
         env["RUNTIME_PLATFORM_CALLBACK_URL"] = (
             f"{get_settings().platform_public_base_url}/api/v1/runtime/incoming"
         )
+        env["RUNTIME_PLATFORM_CHANNEL_KEY"] = get_settings().runtime_platform_channel_key
+        env["SIMPLE_CONNECT_NAME"] = get_settings().simple_connect_name
         if get_settings().runtime_callback_token:
             env["RUNTIME_PLATFORM_CALLBACK_TOKEN"] = get_settings().runtime_callback_token
 

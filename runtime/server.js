@@ -195,13 +195,10 @@ function shouldIgnoreRuntimeMessage(state, messageId) {
   return false;
 }
 
-async function resolveChatId(state, message) {
+async function inspectMessageChat(state, message) {
+  let chat = null;
   try {
-    const chat = await message.getChat();
-    const resolved = String(chat?.id?._serialized || "").trim();
-    if (resolved) {
-      return resolved;
-    }
+    chat = await message.getChat();
   } catch (_chatError) {
     // Fallback to raw message fields below.
   }
@@ -210,16 +207,40 @@ async function resolveChatId(state, message) {
   const from = String(message.from || "").trim();
   const to = String(message.to || "").trim();
 
-  if (message.fromMe) {
-    if (to) {
-      return to;
-    }
-    if (from && from !== ownWid) {
-      return from;
+  let chatId = String(chat?.id?._serialized || "").trim();
+  if (!chatId) {
+    if (message.fromMe) {
+      if (to) {
+        chatId = to;
+      } else if (from && from !== ownWid) {
+        chatId = from;
+      }
     }
   }
 
-  return from || to || ownWid;
+  if (!chatId) {
+    chatId = from || to || ownWid;
+  }
+
+  const chatServer = String(chat?.id?.server || "").trim().toLowerCase();
+  const normalizedChatId = chatId.toLowerCase();
+  const isGroup = Boolean(chat?.isGroup) || normalizedChatId.endsWith("@g.us") || chatServer === "g.us";
+  const isBroadcast =
+    normalizedChatId === "status@broadcast" ||
+    normalizedChatId.endsWith("@broadcast") ||
+    chatServer === "broadcast";
+
+  return {
+    chatId,
+    isGroup,
+    isBroadcast,
+    chatServer
+  };
+}
+
+async function resolveChatId(state, message) {
+  const chatContext = await inspectMessageChat(state, message);
+  return chatContext.chatId;
 }
 
 async function handleRuntimeMessageEvent(state, message, eventName) {
@@ -237,7 +258,22 @@ async function handleRuntimeMessageEvent(state, message, eventName) {
   const ownWid = String(state.client?.info?.wid?._serialized || state.wid || "").trim();
 
   try {
-    const chatId = await resolveChatId(state, message);
+    const chatContext = await inspectMessageChat(state, message);
+    const chatId = chatContext.chatId;
+    if (chatContext.isGroup || chatContext.isBroadcast) {
+      console.log(
+        `[runtime:${state.channelId}] skipped non-personal chat`,
+        JSON.stringify({
+          messageId,
+          chatId,
+          eventName,
+          isGroup: chatContext.isGroup,
+          isBroadcast: chatContext.isBroadcast
+        })
+      );
+      return;
+    }
+
     const isSelfChat = Boolean(ownWid && chatId && chatId === ownWid);
     const allowBotReply = Boolean(message.fromMe && isSelfChat);
 
@@ -249,7 +285,10 @@ async function handleRuntimeMessageEvent(state, message, eventName) {
       chatId,
       eventName,
       isSelfChat,
-      allowBotReply
+      allowBotReply,
+      isGroup: chatContext.isGroup,
+      isBroadcast: chatContext.isBroadcast,
+      chatType: chatContext.chatServer
     });
     if (posted && messageId) {
       state.recentForwardedMessageIds.set(messageId, Date.now());
@@ -305,6 +344,9 @@ async function postIncomingMessageToPlatform(state, message, options = {}) {
       from_me: Boolean(message.fromMe),
       self_chat: isSelfChat,
       allow_bot_reply: allowBotReply,
+      is_group: Boolean(options.isGroup),
+      is_broadcast: Boolean(options.isBroadcast),
+      chat_type: String(options.chatType || "").trim(),
       event_source: String(options.eventName || "message").trim() || "message"
     }
   };
@@ -513,6 +555,31 @@ async function ensureClient(state) {
   return state;
 }
 
+async function bootstrapDefaultChannel() {
+  const defaultChannelKey = String(process.env.RUNTIME_PLATFORM_CHANNEL_KEY || "").trim();
+  if (!defaultChannelKey) {
+    return;
+  }
+
+  const defaultDisplayName = String(process.env.SIMPLE_CONNECT_NAME || "Platform WhatsApp").trim();
+  const state = getState(defaultChannelKey, defaultDisplayName);
+
+  try {
+    await ensureClient(state);
+    await waitForRenderableState(state);
+    console.log(
+      `[runtime:${defaultChannelKey}] bootstrap complete`,
+      JSON.stringify({
+        connectionStatus: state.connectionStatus,
+        qrAvailable: state.qrAvailable
+      })
+    );
+  } catch (error) {
+    state.lastError = sanitizeError(error);
+    console.error(`[runtime:${defaultChannelKey}] bootstrap failed`, state.lastError);
+  }
+}
+
 async function destroyClient(state, wipeSession) {
   if (state.client) {
     try {
@@ -636,4 +703,7 @@ app.listen(runtimePort, "127.0.0.1", () => {
   console.log(
     `MINIGREENAPI runtime listening on 127.0.0.1:${runtimePort} | callback=${runtimePlatformCallbackUrl || "disabled"}`
   );
+  bootstrapDefaultChannel().catch((error) => {
+    console.error("[runtime] default bootstrap failed", sanitizeError(error));
+  });
 });

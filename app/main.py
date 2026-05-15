@@ -23,6 +23,7 @@ from app.routes.upload import router as upload_router
 from app.services.chat_store import get_chat_store_service
 from app.services.bot_registry import get_bot_registry_service
 from app.services.project_registry import get_project_registry_service
+from app.services.self_hosted_runtime_service import SelfHostedRuntimeServiceError, get_self_hosted_runtime_service
 from app.utils.config import get_settings
 from app.utils.logging import configure_logging
 
@@ -37,7 +38,21 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     logger.info("Starting %s", settings.app_name)
     get_project_registry_service()
     get_chat_store_service()
-    get_bot_registry_service()
+    bot_registry = get_bot_registry_service()
+    try:
+        get_self_hosted_runtime_service().ensure_channel(
+            settings.runtime_platform_channel_key,
+            settings.simple_connect_name,
+        )
+        logger.info("Runtime channel %s is ready", settings.runtime_platform_channel_key)
+        connected_bot = bot_registry.ensure_default_bot_connected()
+        logger.info(
+            "Bot channel binding is ready: channel=%s bot=%s",
+            settings.runtime_platform_channel_key,
+            connected_bot.slug,
+        )
+    except SelfHostedRuntimeServiceError as exc:
+        logger.warning("Runtime channel bootstrap failed: %s", exc)
     yield
     logger.info("Stopping %s", settings.app_name)
 

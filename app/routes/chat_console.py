@@ -66,6 +66,25 @@ def ensure_runtime_callback_authorized(x_runtime_callback_token: str | None) -> 
         )
 
 
+def should_store_personal_runtime_message(payload: RuntimeIncomingMessageRequest) -> bool:
+    """Accept only direct WhatsApp chats and ignore groups/broadcasts."""
+    message = payload.message if isinstance(payload.message, dict) else {}
+    chat_id = str(message.get("chat_id", "")).strip().lower()
+    if not chat_id:
+        return False
+
+    if bool(message.get("self_chat", False)):
+        return True
+
+    if bool(message.get("is_group", False)) or chat_id.endswith("@g.us"):
+        return False
+
+    if bool(message.get("is_broadcast", False)) or chat_id == "status@broadcast" or chat_id.endswith("@broadcast"):
+        return False
+
+    return True
+
+
 @router.get("/chats", response_class=HTMLResponse)
 def chat_console_page() -> str:
     """Render the platform inbox UI for monitoring and replying to chats."""
@@ -173,6 +192,13 @@ def receive_runtime_incoming_message(
 ) -> dict[str, object]:
     """Persist one inbound WhatsApp event posted by the local runtime."""
     ensure_runtime_callback_authorized(x_runtime_callback_token)
+    if not should_store_personal_runtime_message(payload):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "non_personal_chat",
+        }
+
     message = get_chat_store_service().store_incoming_message(payload.channel_key, payload.model_dump())
     bot_result: dict[str, object] = {"handled": False, "reason": "not_processed"}
     try:

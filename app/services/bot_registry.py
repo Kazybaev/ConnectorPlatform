@@ -246,6 +246,19 @@ class BotRegistryService:
             raise RuntimeError("Default bot was updated but could not be reloaded.")
         return refreshed
 
+    def ensure_default_bot_connected(self) -> BotRecord:
+        """Reconnect the default bot to the platform runtime when no other active bot is attached."""
+        record = self.sync_default_bot_from_settings()
+        if not record.enabled:
+            return record
+
+        channel_key = self._settings.runtime_platform_channel_key
+        connected = self.get_connected_bot_for_channel(channel_key)
+        if connected is not None:
+            return connected
+
+        return self.connect_bot_to_channel(record.id, channel_key)
+
     def set_bot_enabled(self, bot_id: str, enabled: bool) -> BotRecord:
         """Activate or deactivate one registered bot."""
         record = self.get_bot(bot_id)
