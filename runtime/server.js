@@ -4,13 +4,44 @@ const path = require("path");
 const QRCode = require("qrcode");
 const { Client, LocalAuth } = require("whatsapp-web.js");
 
+function loadLocalEnvFile() {
+  const envPath = path.resolve(__dirname, "..", ".env");
+  if (!fs.existsSync(envPath)) {
+    return;
+  }
+
+  const raw = fs.readFileSync(envPath, "utf8");
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) {
+      continue;
+    }
+
+    const separatorIndex = trimmed.indexOf("=");
+    const key = trimmed.slice(0, separatorIndex).trim();
+    const value = trimmed.slice(separatorIndex + 1).trim().replace(/^['"]|['"]$/g, "");
+    if (key && !(key in process.env)) {
+      process.env[key] = value;
+    }
+  }
+}
+
+loadLocalEnvFile();
+
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 
-const runtimePort = Number(process.env.RUNTIME_PORT || "8011");
-const runtimeToken = String(process.env.RUNTIME_TOKEN || "").trim();
-const runtimePlatformCallbackUrl = String(process.env.RUNTIME_PLATFORM_CALLBACK_URL || "").trim();
-const runtimePlatformCallbackToken = String(process.env.RUNTIME_PLATFORM_CALLBACK_TOKEN || "").trim();
+const platformPublicBaseUrl = String(
+  process.env.PLATFORM_PUBLIC_BASE_URL || "http://127.0.0.1:8000"
+).trim().replace(/\/+$/, "");
+const runtimePort = Number(process.env.RUNTIME_PORT || process.env.RUNTIME_SERVICE_PORT || "8011");
+const runtimeToken = String(process.env.RUNTIME_TOKEN || process.env.RUNTIME_SERVICE_TOKEN || "").trim();
+const runtimePlatformCallbackUrl = String(
+  process.env.RUNTIME_PLATFORM_CALLBACK_URL || `${platformPublicBaseUrl}/api/v1/runtime/incoming`
+).trim();
+const runtimePlatformCallbackToken = String(
+  process.env.RUNTIME_PLATFORM_CALLBACK_TOKEN || process.env.RUNTIME_CALLBACK_TOKEN || runtimeToken || ""
+).trim();
 const sessionRoot = path.resolve(__dirname, "..", "data", "runtime", "sessions");
 
 fs.mkdirSync(sessionRoot, { recursive: true });
@@ -70,6 +101,9 @@ function buildInitialState(channelKey, displayName) {
     lastConnectionAt: "",
     lastMessageAt: "",
     lastError: "",
+    recentForwardedMessageIds: new Map(),
+    pendingForwardedMessageIds: new Set(),
+    recentPlatformOutboundMessageIds: new Map(),
     client: null,
     initPromise: null
   };
@@ -121,12 +155,133 @@ function normalizeIncomingText(message) {
   return `[${type}]`;
 }
 
-async function postIncomingMessageToPlatform(state, message) {
-  if (!runtimePlatformCallbackUrl) {
+function pruneRecentMessageMaps(state) {
+  const cutoff = Date.now() - 15 * 60 * 1000;
+  for (const [messageId, createdAt] of state.recentForwardedMessageIds.entries()) {
+    if (createdAt < cutoff) {
+      state.recentForwardedMessageIds.delete(messageId);
+    }
+  }
+  for (const [messageId, createdAt] of state.recentPlatformOutboundMessageIds.entries()) {
+    if (createdAt < cutoff) {
+      state.recentPlatformOutboundMessageIds.delete(messageId);
+    }
+  }
+}
+
+function rememberPlatformOutboundMessage(state, messageId) {
+  if (!messageId) {
+    return;
+  }
+  pruneRecentMessageMaps(state);
+  state.recentPlatformOutboundMessageIds.set(messageId, Date.now());
+}
+
+function shouldIgnoreRuntimeMessage(state, messageId) {
+  if (!messageId) {
+    return false;
+  }
+
+  pruneRecentMessageMaps(state);
+  if (state.recentPlatformOutboundMessageIds.has(messageId)) {
+    return true;
+  }
+  if (state.pendingForwardedMessageIds.has(messageId)) {
+    return true;
+  }
+  if (state.recentForwardedMessageIds.has(messageId)) {
+    return true;
+  }
+  return false;
+}
+
+async function resolveChatId(state, message) {
+  try {
+    const chat = await message.getChat();
+    const resolved = String(chat?.id?._serialized || "").trim();
+    if (resolved) {
+      return resolved;
+    }
+  } catch (_chatError) {
+    // Fallback to raw message fields below.
+  }
+
+  const ownWid = String(state.client?.info?.wid?._serialized || state.wid || "").trim();
+  const from = String(message.from || "").trim();
+  const to = String(message.to || "").trim();
+
+  if (message.fromMe) {
+    if (to) {
+      return to;
+    }
+    if (from && from !== ownWid) {
+      return from;
+    }
+  }
+
+  return from || to || ownWid;
+}
+
+async function handleRuntimeMessageEvent(state, message, eventName) {
+  state.lastMessageAt = nowIso();
+
+  const messageId = String(message.id?._serialized || "").trim();
+  if (shouldIgnoreRuntimeMessage(state, messageId)) {
     return;
   }
 
+  if (messageId) {
+    state.pendingForwardedMessageIds.add(messageId);
+  }
+
+  const ownWid = String(state.client?.info?.wid?._serialized || state.wid || "").trim();
+
+  try {
+    const chatId = await resolveChatId(state, message);
+    const isSelfChat = Boolean(ownWid && chatId && chatId === ownWid);
+    const allowBotReply = Boolean(message.fromMe && isSelfChat);
+
+    if (message.fromMe && !allowBotReply) {
+      return;
+    }
+
+    const posted = await postIncomingMessageToPlatform(state, message, {
+      chatId,
+      eventName,
+      isSelfChat,
+      allowBotReply
+    });
+    if (posted && messageId) {
+      state.recentForwardedMessageIds.set(messageId, Date.now());
+    }
+    if (posted) {
+      console.log(
+        `[runtime:${state.channelId}] forwarded ${eventName} message`,
+        JSON.stringify({
+          messageId,
+          chatId,
+          fromMe: Boolean(message.fromMe),
+          isSelfChat,
+          messageType: String(message.type || "text").trim() || "text"
+        })
+      );
+    }
+  } finally {
+    if (messageId) {
+      state.pendingForwardedMessageIds.delete(messageId);
+    }
+  }
+}
+
+async function postIncomingMessageToPlatform(state, message, options = {}) {
+  if (!runtimePlatformCallbackUrl) {
+    return false;
+  }
+
   const text = normalizeIncomingText(message);
+  const chatId = String(options.chatId || "").trim() || await resolveChatId(state, message);
+  const isSelfChat = Boolean(options.isSelfChat);
+  const allowBotReply = Boolean(options.allowBotReply);
   const contact = await message.getContact().catch(() => null);
   const senderName = String(
     contact?.pushname ||
@@ -141,13 +296,16 @@ async function postIncomingMessageToPlatform(state, message) {
     channel_name: state.displayName,
     message: {
       external_message_id: String(message.id?._serialized || "").trim(),
-      chat_id: String(message.from || "").trim(),
-      sender_id: String(message.author || message.from || "").trim(),
+      chat_id: chatId,
+      sender_id: String(message.author || message.from || message.to || "").trim(),
       sender_name: senderName,
       text,
       message_type: String(message.type || "text").trim() || "text",
       timestamp: message.timestamp || null,
-      from_me: Boolean(message.fromMe)
+      from_me: Boolean(message.fromMe),
+      self_chat: isSelfChat,
+      allow_bot_reply: allowBotReply,
+      event_source: String(options.eventName || "message").trim() || "message"
     }
   };
 
@@ -169,9 +327,14 @@ async function postIncomingMessageToPlatform(state, message) {
       state.lastError = detail
         ? `Platform inbox callback failed: ${detail}`
         : `Platform inbox callback failed with status ${response.status}.`;
+      console.error(`[runtime:${state.channelId}] platform callback failed`, state.lastError);
+      return false;
     }
+    return true;
   } catch (error) {
     state.lastError = `Platform inbox callback failed: ${sanitizeError(error)}`;
+    console.error(`[runtime:${state.channelId}] platform callback error`, state.lastError);
+    return false;
   }
 }
 
@@ -277,8 +440,11 @@ async function attachClientEventHandlers(state, client) {
   });
 
   client.on("message", async (message) => {
-    state.lastMessageAt = nowIso();
-    await postIncomingMessageToPlatform(state, message);
+    await handleRuntimeMessageEvent(state, message, "message");
+  });
+
+  client.on("message_create", async (message) => {
+    await handleRuntimeMessageEvent(state, message, "message_create");
   });
 
   client.on("auth_failure", (message) => {
@@ -376,7 +542,9 @@ app.get("/health", (_req, res) => {
   res.json({
     status: "ok",
     service: "minigreenapi-runtime",
-    channels: [...channelStates.keys()]
+    channels: [...channelStates.keys()],
+    callback_configured: Boolean(runtimePlatformCallbackUrl),
+    callback_url: runtimePlatformCallbackUrl || ""
   });
 });
 
@@ -456,6 +624,7 @@ app.post("/api/v1/channels/:channelKey/messages/send", requireRuntimeToken, asyn
   try {
     const message = await state.client.sendMessage(chatId, text);
     state.lastMessageAt = nowIso();
+    rememberPlatformOutboundMessage(state, String(message.id?._serialized || "").trim());
     res.json({ id_message: String(message.id?._serialized || "") });
   } catch (error) {
     state.lastError = sanitizeError(error);
@@ -464,5 +633,7 @@ app.post("/api/v1/channels/:channelKey/messages/send", requireRuntimeToken, asyn
 });
 
 app.listen(runtimePort, "127.0.0.1", () => {
-  console.log(`MINIGREENAPI runtime listening on 127.0.0.1:${runtimePort}`);
+  console.log(
+    `MINIGREENAPI runtime listening on 127.0.0.1:${runtimePort} | callback=${runtimePlatformCallbackUrl || "disabled"}`
+  );
 });

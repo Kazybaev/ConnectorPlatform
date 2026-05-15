@@ -52,7 +52,9 @@ class PlatformBotRuntimeService:
     def process_runtime_incoming_message(self, channel_key: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Send one inbound WhatsApp message through the active platform bot when configured."""
         message = payload.get("message", {}) if isinstance(payload.get("message"), dict) else {}
-        if bool(message.get("from_me", False)):
+        is_self_chat = bool(message.get("self_chat", False))
+        allow_bot_reply = bool(message.get("allow_bot_reply", False))
+        if bool(message.get("from_me", False)) and not (is_self_chat and allow_bot_reply):
             return {"handled": False, "reason": "from_me"}
 
         chat_id = str(message.get("chat_id", "")).strip()
@@ -76,6 +78,17 @@ class PlatformBotRuntimeService:
         answer_text = self._extract_bot_answer(answer_payload).strip()
         if not answer_text:
             return {"handled": False, "reason": "empty_answer", "bot_id": bot.id}
+
+        logger.info(
+            "Platform bot handling WhatsApp message",
+            extra={
+                "channel_key": channel_key,
+                "chat_id": chat_id,
+                "bot_id": bot.id,
+                "self_chat": is_self_chat,
+                "input_preview": text[:160],
+            },
+        )
 
         runtime_service = get_self_hosted_runtime_service()
         chat_store = get_chat_store_service()
