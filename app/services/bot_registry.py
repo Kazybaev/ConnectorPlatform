@@ -10,8 +10,8 @@ from typing import Iterator
 from uuid import uuid4
 
 from app.models.schemas import BotApiBinding, BotCreateRequest, BotVariableDefinition
-from app.services.project_registry import utc_now_iso
 from app.utils.config import Settings, get_settings
+from app.utils.time import utc_now_iso
 
 
 @dataclass(slots=True)

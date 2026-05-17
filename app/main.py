@@ -17,12 +17,10 @@ from app.routes.bot_console import api_router as bot_console_api_router
 from app.routes.bot_console import router as bot_console_router
 from app.routes.onboarding import api_router as onboarding_api_router
 from app.routes.onboarding import router as onboarding_router
-from app.routes.projects import admin_router, project_router
 from app.routes.site import router as site_router
 from app.routes.upload import router as upload_router
 from app.services.chat_store import get_chat_store_service
 from app.services.bot_registry import get_bot_registry_service
-from app.services.project_registry import get_project_registry_service
 from app.services.self_hosted_runtime_service import SelfHostedRuntimeServiceError, get_self_hosted_runtime_service
 from app.utils.config import get_settings
 from app.utils.logging import configure_logging
@@ -36,7 +34,6 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     logger.info("Starting %s", settings.app_name)
-    get_project_registry_service()
     get_chat_store_service()
     bot_registry = get_bot_registry_service()
     try:
@@ -77,8 +74,6 @@ app.add_middleware(
 
 app.include_router(health_router)
 app.include_router(upload_router)
-app.include_router(admin_router)
-app.include_router(project_router)
 app.include_router(site_router)
 app.include_router(onboarding_router)
 app.include_router(onboarding_api_router)

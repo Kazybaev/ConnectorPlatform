@@ -57,7 +57,7 @@
     pollTimer: null,
     lastConnectionStatus: "disconnected",
   };
-  const STORAGE_KEY = "minigreenapi.simple-connect.snapshot";
+  const STORAGE_KEY = "whatsapp-web-bot-platform.simple-connect.snapshot";
 
   const dom = {
     connectionName: document.getElementById("connection-name"),

@@ -63,9 +63,9 @@ def build_platform_instructions(record: BotRecord) -> list[str]:
     instructions = [
         f"Создайте или выберите проект в платформе и укажите endpoint вашего {engine_label}-бота как provider URL, если хотите использовать проектную схему.",
         (
-            "Для обратной отправки сообщений через проектный режим бот должен вызывать "
-            f"{settings.platform_public_base_url}/api/v1/projects/{{project_id}}/messages/send "
-            "с заголовком X-Project-Key."
+            "Для обратной отправки сообщений платформа использует "
+            f"{settings.platform_public_base_url}/api/v1/platform/chats/{{chat_id}}/send "
+            "и отправляет их через WhatsApp Web JS runtime."
         ),
         (
             "Если нужен только дефолтный тестовый бот без отдельного backend, можно подключить его прямо к platform-main. "
@@ -105,9 +105,6 @@ def build_env_example(record: BotRecord) -> dict[str, str]:
     settings = get_settings()
     env_example = {item.key: item.default_value for item in record.variables}
     env_example.setdefault("PLATFORM_BASE_URL", settings.platform_public_base_url)
-    env_example.setdefault("PLATFORM_PROJECT_ID", record.linked_project_id or "proj_xxx")
-    env_example.setdefault("PLATFORM_PROJECT_API_KEY", "project_key_xxx")
-    env_example.setdefault("PLATFORM_CHANNEL_ID", "wa_xxx")
     env_example.setdefault("PLATFORM_CHANNEL_KEY", record.linked_channel_key or settings.runtime_platform_channel_key)
     return env_example
 
@@ -146,14 +143,11 @@ def build_outbound_example(record: BotRecord) -> dict[str, object]:
     """Show how a bot should send a reply back through the platform."""
     return {
         "method": "POST",
-        "url": f"{get_settings().platform_public_base_url}/api/v1/projects/{record.linked_project_id or 'proj_xxx'}/messages/send",
+        "url": f"{get_settings().platform_public_base_url}/api/v1/platform/chats/996500000000@c.us/send",
         "headers": {
-            "X-Project-Key": "project_key_xxx",
             "Content-Type": "application/json",
         },
         "json": {
-            "channel_id": "wa_xxx",
-            "chat_id": "996500000000@c.us",
             "text": "Здравствуйте! Проверяю ваш заказ.",
         },
     }
@@ -183,7 +177,7 @@ def bot_console_page() -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>MINIGREENAPI | Боты платформы</title>
+  <title>WhatsApp Web Bot Platform | Боты платформы</title>
   <meta name="description" content="Каталог дефолтных и кастомных ботов платформы: Dify, n8n и webhook-интеграции с инструкциями по переменным." />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -390,7 +384,7 @@ def bot_console_page() -> str:
 
             <label>
               <span>Переменные бота</span>
-              <textarea id="bot-variables-input" rows="5" placeholder="KEY|required|default|description&#10;PLATFORM_BASE_URL|true|http://127.0.0.1:8000|Базовый адрес платформы&#10;PLATFORM_PROJECT_API_KEY|true||Ключ для outbound send endpoint"></textarea>
+              <textarea id="bot-variables-input" rows="5" placeholder="KEY|required|default|description&#10;PLATFORM_BASE_URL|true|http://127.0.0.1:8000|Базовый адрес платформы&#10;PLATFORM_CHANNEL_KEY|true|platform-main|Канал WhatsApp Web JS runtime"></textarea>
             </label>
 
             <label>

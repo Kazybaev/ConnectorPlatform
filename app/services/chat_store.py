@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any, Iterator
 from uuid import uuid4
 
-from app.services.project_registry import utc_now_iso
 from app.utils.config import Settings, get_settings
+from app.utils.time import utc_now_iso
 
 
 def normalize_chat_timestamp(value: Any) -> str:
@@ -165,6 +165,24 @@ class ChatStoreService:
             ).fetchall()
 
         return [self._row_to_message(row) for row in rows]
+
+    def get_message_by_external_id(self, channel_key: str, external_message_id: str) -> ChatMessageRecord | None:
+        """Return a previously stored runtime message by its WhatsApp/runtime id."""
+        external_message_id = external_message_id.strip()
+        if not external_message_id:
+            return None
+
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM chat_messages
+                WHERE channel_key = ? AND external_message_id = ?
+                """,
+                (channel_key, external_message_id),
+            ).fetchone()
+
+        return self._row_to_message(row) if row is not None else None
 
     def store_incoming_message(self, channel_key: str, payload: dict[str, Any]) -> ChatMessageRecord:
         """Persist one inbound runtime event and update the conversation summary."""

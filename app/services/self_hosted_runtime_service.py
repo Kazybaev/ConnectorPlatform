@@ -80,6 +80,7 @@ class SelfHostedRuntimeService:
             method="PUT",
             path=f"/api/v1/channels/{channel_key}",
             json={"display_name": display_name},
+            timeout_seconds=90,
         )
 
     def get_channel_status(self, channel_key: str) -> dict[str, Any]:
@@ -97,6 +98,7 @@ class SelfHostedRuntimeService:
             method="POST",
             path=f"/api/v1/channels/{channel_key}/reset",
             json={},
+            timeout_seconds=90,
         )
 
     def send_message(self, channel_key: str, chat_id: str, text: str) -> dict[str, Any]:
@@ -167,6 +169,7 @@ class SelfHostedRuntimeService:
         method: str,
         path: str,
         json: dict[str, Any] | None = None,
+        timeout_seconds: float = 30,
     ) -> dict[str, Any]:
         url = f"{self._base_url}{path}"
 
@@ -176,7 +179,7 @@ class SelfHostedRuntimeService:
                 url=url,
                 json=json,
                 headers=self._headers(),
-                timeout=30,
+                timeout=timeout_seconds,
             )
         except requests.RequestException as exc:
             raise SelfHostedRuntimeServiceError(

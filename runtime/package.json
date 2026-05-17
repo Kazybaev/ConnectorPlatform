@@ -1,8 +1,8 @@
 {
-  "name": "minigreenapi-runtime",
+  "name": "whatsapp-web-bot-runtime",
   "version": "1.0.0",
   "private": true,
-  "description": "Self-hosted WhatsApp runtime for MINIGREENAPI.",
+  "description": "Self-hosted WhatsApp runtime for WhatsApp Web Bot Platform.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

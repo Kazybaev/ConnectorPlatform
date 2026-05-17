@@ -12,17 +12,17 @@ if (-not (Test-Path $envPath)) {
     exit 1
 }
 
-$existingBots = Get-CimInstance Win32_Process | Where-Object {
-    $_.Name -eq "python.exe" -and $_.CommandLine -match "app.whatsapp_bot"
+$existingApiProcesses = Get-CimInstance Win32_Process | Where-Object {
+    $_.Name -eq "python.exe" -and $_.CommandLine -match "uvicorn" -and $_.CommandLine -match "app.main:app"
 }
 
-foreach ($bot in $existingBots) {
+foreach ($process in $existingApiProcesses) {
     try {
-        Stop-Process -Id $bot.ProcessId -Force -ErrorAction Stop
+        Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
     } catch {
-        Write-Warning "Could not stop bot process $($bot.ProcessId): $($_.Exception.Message)"
+        Write-Warning "Could not stop API process $($process.ProcessId): $($_.Exception.Message)"
     }
 }
 
 Start-Sleep -Seconds 1
-& $pythonPath -m app.whatsapp_bot
+& $pythonPath -m uvicorn app.main:app --host 0.0.0.0 --port 8000

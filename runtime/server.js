@@ -42,7 +42,17 @@ const runtimePlatformCallbackUrl = String(
 const runtimePlatformCallbackToken = String(
   process.env.RUNTIME_PLATFORM_CALLBACK_TOKEN || process.env.RUNTIME_CALLBACK_TOKEN || runtimeToken || ""
 ).trim();
+const configuredStartupReplayGraceMs = Number(process.env.RUNTIME_STARTUP_REPLAY_GRACE_MS || "0");
+const startupReplayGraceMs = Number.isFinite(configuredStartupReplayGraceMs)
+  ? Math.max(0, configuredStartupReplayGraceMs)
+  : 3000;
 const sessionRoot = path.resolve(__dirname, "..", "data", "runtime", "sessions");
+const reconnectBaseDelayMs = 5000;
+const reconnectMaxDelayMs = 60000;
+const configuredConnectStallMs = Number(process.env.RUNTIME_CONNECT_STALL_MS || "90000");
+const connectStallMs = Number.isFinite(configuredConnectStallMs)
+  ? Math.max(30000, configuredConnectStallMs)
+  : 90000;
 
 fs.mkdirSync(sessionRoot, { recursive: true });
 
@@ -72,6 +82,10 @@ function sanitizeError(error) {
   return String(error);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function buildEmptyProfile() {
   return {
     name: "",
@@ -93,6 +107,7 @@ function buildInitialState(channelKey, displayName) {
     connectionStatus: "disconnected",
     qrAvailable: false,
     qrCodeDataUrl: "",
+    connectingSinceMs: 0,
     phone: "",
     pushName: "",
     platform: "",
@@ -101,9 +116,14 @@ function buildInitialState(channelKey, displayName) {
     lastConnectionAt: "",
     lastMessageAt: "",
     lastError: "",
+    botActivatedAt: "",
+    botActivatedAtMs: 0,
     recentForwardedMessageIds: new Map(),
     pendingForwardedMessageIds: new Set(),
     recentPlatformOutboundMessageIds: new Map(),
+    reconnectTimer: null,
+    reconnectAttempts: 0,
+    isResetting: false,
     client: null,
     initPromise: null
   };
@@ -123,6 +143,11 @@ function getState(channelKey, displayName = "Platform WhatsApp") {
   return state;
 }
 
+function setConnectionStatus(state, status) {
+  state.connectionStatus = status;
+  state.connectingSinceMs = status === "connecting" ? Date.now() : 0;
+}
+
 function serializeState(state) {
   return {
     channel_id: state.channelId,
@@ -137,8 +162,17 @@ function serializeState(state) {
     profile: state.profile,
     last_connection_at: state.lastConnectionAt,
     last_message_at: state.lastMessageAt,
+    bot_activated_at: state.botActivatedAt,
     last_error: state.lastError
   };
+}
+
+function isConnectingStalled(state) {
+  return Boolean(
+    state.connectionStatus === "connecting" &&
+    state.connectingSinceMs &&
+    Date.now() - state.connectingSinceMs > connectStallMs
+  );
 }
 
 function normalizeIncomingText(message) {
@@ -167,6 +201,92 @@ function pruneRecentMessageMaps(state) {
       state.recentPlatformOutboundMessageIds.delete(messageId);
     }
   }
+}
+
+function clearReconnectTimer(state) {
+  if (!state.reconnectTimer) {
+    return;
+  }
+
+  clearTimeout(state.reconnectTimer);
+  state.reconnectTimer = null;
+}
+
+function scheduleReconnect(state, reason) {
+  if (state.isResetting || state.connectionStatus === "connected" || state.reconnectTimer) {
+    return;
+  }
+
+  const delay = Math.min(
+    reconnectMaxDelayMs,
+    reconnectBaseDelayMs * Math.max(1, 2 ** state.reconnectAttempts)
+  );
+  state.reconnectAttempts += 1;
+
+  console.warn(
+    `[runtime:${state.channelId}] reconnect scheduled`,
+    JSON.stringify({ reason: String(reason || "disconnected"), delayMs: delay })
+  );
+
+  state.reconnectTimer = setTimeout(async () => {
+    state.reconnectTimer = null;
+    if (state.isResetting || state.connectionStatus === "connected") {
+      return;
+    }
+
+    try {
+      state.client = null;
+      state.initPromise = null;
+      await ensureClient(state);
+      await waitForRenderableState(state, 30000);
+    } catch (error) {
+      state.client = null;
+      state.initPromise = null;
+      state.lastError = sanitizeError(error);
+      scheduleReconnect(state, "reconnect_failed");
+    }
+  }, delay);
+}
+
+function messageTimestampMs(message) {
+  const rawTimestamp = message?.timestamp;
+  if (rawTimestamp === null || rawTimestamp === undefined || rawTimestamp === "") {
+    return 0;
+  }
+
+  const parsed = Number(rawTimestamp);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 0;
+  }
+
+  return parsed > 10000000000 ? Math.floor(parsed) : Math.floor(parsed * 1000);
+}
+
+function resolveBotEligibility(state, message) {
+  const activatedAtMs = Number(state.botActivatedAtMs || 0);
+  const sentAtMs = messageTimestampMs(message);
+  if (!activatedAtMs) {
+    return {
+      botEligible: false,
+      botSkipReason: "runtime_not_ready",
+      messageTimestampMs: sentAtMs
+    };
+  }
+
+  const activationThresholdMs = Math.floor((activatedAtMs - startupReplayGraceMs) / 1000) * 1000;
+  if (sentAtMs && sentAtMs < activationThresholdMs) {
+    return {
+      botEligible: false,
+      botSkipReason: "before_runtime_activation",
+      messageTimestampMs: sentAtMs
+    };
+  }
+
+  return {
+    botEligible: true,
+    botSkipReason: "",
+    messageTimestampMs: sentAtMs
+  };
 }
 
 function rememberPlatformOutboundMessage(state, messageId) {
@@ -281,11 +401,15 @@ async function handleRuntimeMessageEvent(state, message, eventName) {
       return;
     }
 
+    const botEligibility = resolveBotEligibility(state, message);
     const posted = await postIncomingMessageToPlatform(state, message, {
       chatId,
       eventName,
       isSelfChat,
       allowBotReply,
+      botEligible: botEligibility.botEligible,
+      botSkipReason: botEligibility.botSkipReason,
+      messageTimestampMs: botEligibility.messageTimestampMs,
       isGroup: chatContext.isGroup,
       isBroadcast: chatContext.isBroadcast,
       chatType: chatContext.chatServer
@@ -301,6 +425,8 @@ async function handleRuntimeMessageEvent(state, message, eventName) {
           chatId,
           fromMe: Boolean(message.fromMe),
           isSelfChat,
+          botEligible: botEligibility.botEligible,
+          botSkipReason: botEligibility.botSkipReason,
           messageType: String(message.type || "text").trim() || "text"
         })
       );
@@ -321,6 +447,9 @@ async function postIncomingMessageToPlatform(state, message, options = {}) {
   const chatId = String(options.chatId || "").trim() || await resolveChatId(state, message);
   const isSelfChat = Boolean(options.isSelfChat);
   const allowBotReply = Boolean(options.allowBotReply);
+  const botEligible = options.botEligible !== false;
+  const botSkipReason = String(options.botSkipReason || "").trim();
+  const runtimeReceivedAt = nowIso();
   const contact = await message.getContact().catch(() => null);
   const senderName = String(
     contact?.pushname ||
@@ -341,9 +470,14 @@ async function postIncomingMessageToPlatform(state, message, options = {}) {
       text,
       message_type: String(message.type || "text").trim() || "text",
       timestamp: message.timestamp || null,
+      timestamp_ms: Number(options.messageTimestampMs || 0),
+      runtime_received_at: runtimeReceivedAt,
+      runtime_activated_at: state.botActivatedAt,
       from_me: Boolean(message.fromMe),
       self_chat: isSelfChat,
       allow_bot_reply: allowBotReply,
+      bot_eligible: botEligible,
+      bot_skip_reason: botEligible ? "" : (botSkipReason || "not_bot_eligible"),
       is_group: Boolean(options.isGroup),
       is_broadcast: Boolean(options.isBroadcast),
       chat_type: String(options.chatType || "").trim(),
@@ -387,6 +521,9 @@ async function waitForRenderableState(state, timeoutMs = 15000) {
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  if (state.connectionStatus === "connecting" && !state.lastError) {
+    state.lastError = "WhatsApp Web JS is still connecting. The runtime will restart the local browser session if this state stalls.";
   }
 }
 
@@ -457,26 +594,30 @@ async function attachClientEventHandlers(state, client) {
     try {
       state.qrCodeDataUrl = await QRCode.toDataURL(qr);
       state.qrAvailable = true;
-      state.connectionStatus = "qr";
+      setConnectionStatus(state, "qr");
       state.lastError = "";
     } catch (error) {
       state.lastError = sanitizeError(error);
-      state.connectionStatus = "disconnected";
+      setConnectionStatus(state, "disconnected");
       state.qrAvailable = false;
       state.qrCodeDataUrl = "";
     }
   });
 
   client.on("authenticated", () => {
-    state.connectionStatus = "connecting";
+    setConnectionStatus(state, "connecting");
     state.lastError = "";
   });
 
   client.on("ready", async () => {
-    state.connectionStatus = "connected";
+    clearReconnectTimer(state);
+    state.reconnectAttempts = 0;
+    setConnectionStatus(state, "connected");
     state.qrAvailable = false;
     state.qrCodeDataUrl = "";
-    state.lastConnectionAt = nowIso();
+    state.botActivatedAtMs = Date.now();
+    state.botActivatedAt = new Date(state.botActivatedAtMs).toISOString();
+    state.lastConnectionAt = state.botActivatedAt;
     state.lastError = "";
     await refreshProfile(state);
   });
@@ -490,17 +631,27 @@ async function attachClientEventHandlers(state, client) {
   });
 
   client.on("auth_failure", (message) => {
-    state.connectionStatus = "disconnected";
+    setConnectionStatus(state, "disconnected");
     state.qrAvailable = false;
     state.qrCodeDataUrl = "";
+    state.botActivatedAt = "";
+    state.botActivatedAtMs = 0;
+    state.client = null;
+    state.initPromise = null;
     state.lastError = sanitizeError(message || "WhatsApp authentication failed.");
+    scheduleReconnect(state, "auth_failure");
   });
 
   client.on("disconnected", (reason) => {
-    state.connectionStatus = "disconnected";
+    setConnectionStatus(state, "disconnected");
     state.qrAvailable = false;
     state.qrCodeDataUrl = "";
+    state.botActivatedAt = "";
+    state.botActivatedAtMs = 0;
+    state.client = null;
+    state.initPromise = null;
     state.lastError = sanitizeError(reason || "WhatsApp disconnected.");
+    scheduleReconnect(state, "disconnected");
   });
 }
 
@@ -517,14 +668,16 @@ async function createClient(state) {
   });
 
   state.client = client;
-  state.connectionStatus = "connecting";
+  setConnectionStatus(state, "connecting");
   state.lastError = "";
+  state.botActivatedAt = "";
+  state.botActivatedAtMs = 0;
   await attachClientEventHandlers(state, client);
 
   try {
     await client.initialize();
   } catch (error) {
-    state.connectionStatus = "disconnected";
+    setConnectionStatus(state, "disconnected");
     state.qrAvailable = false;
     state.qrCodeDataUrl = "";
     state.lastError = sanitizeError(error);
@@ -536,6 +689,15 @@ async function ensureClient(state) {
   if (state.initPromise) {
     await state.initPromise;
     return state;
+  }
+
+  if (isConnectingStalled(state)) {
+    console.warn(
+      `[runtime:${state.channelId}] connecting stalled; restarting local browser session`,
+      JSON.stringify({ stallMs: Date.now() - state.connectingSinceMs })
+    );
+    state.lastError = "WhatsApp Web JS connection stalled; restarted the local browser session.";
+    await destroyClient(state, false);
   }
 
   if (state.client) {
@@ -581,6 +743,7 @@ async function bootstrapDefaultChannel() {
 }
 
 async function destroyClient(state, wipeSession) {
+  clearReconnectTimer(state);
   if (state.client) {
     try {
       await state.client.destroy();
@@ -591,7 +754,7 @@ async function destroyClient(state, wipeSession) {
 
   state.client = null;
   state.initPromise = null;
-  state.connectionStatus = "disconnected";
+  setConnectionStatus(state, "disconnected");
   state.qrAvailable = false;
   state.qrCodeDataUrl = "";
   state.phone = "";
@@ -599,16 +762,37 @@ async function destroyClient(state, wipeSession) {
   state.platform = "";
   state.wid = "";
   state.profile = buildEmptyProfile();
+  state.botActivatedAt = "";
+  state.botActivatedAtMs = 0;
 
   if (wipeSession) {
-    fs.rmSync(sessionDirectory(state.channelId), { recursive: true, force: true });
+    await removeSessionDirectoryWithRetries(sessionDirectory(state.channelId));
   }
+}
+
+async function removeSessionDirectoryWithRetries(targetDirectory) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= 8; attempt += 1) {
+    try {
+      fs.rmSync(targetDirectory, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      lastError = error;
+      const code = String(error?.code || "").toUpperCase();
+      if (!["EBUSY", "ENOTEMPTY", "EPERM"].includes(code)) {
+        throw error;
+      }
+      await sleep(250 * attempt);
+    }
+  }
+
+  throw lastError || new Error(`Could not remove session directory: ${targetDirectory}`);
 }
 
 app.get("/health", (_req, res) => {
   res.json({
     status: "ok",
-    service: "minigreenapi-runtime",
+    service: "whatsapp-web-bot-runtime",
     channels: [...channelStates.keys()],
     callback_configured: Boolean(runtimePlatformCallbackUrl),
     callback_url: runtimePlatformCallbackUrl || ""
@@ -655,19 +839,14 @@ app.post("/api/v1/channels/:channelKey/reset", requireRuntimeToken, async (req, 
   const state = getState(channelKey, existingState?.displayName || "Platform WhatsApp");
 
   try {
-    if (state.client) {
-      try {
-        await state.client.logout();
-      } catch (_logoutError) {
-        // Some sessions cannot logout cleanly; we still wipe local auth below.
-      }
-    }
-
+    state.isResetting = true;
     await destroyClient(state, true);
+    state.isResetting = false;
     await ensureClient(state);
     await waitForRenderableState(state);
     res.json(serializeState(state));
   } catch (error) {
+    state.isResetting = false;
     state.lastError = sanitizeError(error);
     res.status(502).json({ detail: state.lastError });
   }
@@ -676,7 +855,7 @@ app.post("/api/v1/channels/:channelKey/reset", requireRuntimeToken, async (req, 
 app.post("/api/v1/channels/:channelKey/messages/send", requireRuntimeToken, async (req, res) => {
   const channelKey = String(req.params.channelKey || "").trim();
   const state = channelStates.get(channelKey);
-  if (!state || !state.client) {
+  if (!state) {
     res.status(404).json({ detail: "Runtime channel not found." });
     return;
   }
@@ -689,6 +868,12 @@ app.post("/api/v1/channels/:channelKey/messages/send", requireRuntimeToken, asyn
   }
 
   try {
+    await ensureClient(state);
+    if (state.connectionStatus !== "connected") {
+      res.status(409).json({ detail: `Runtime channel is not connected (${state.connectionStatus}).` });
+      return;
+    }
+
     const message = await state.client.sendMessage(chatId, text);
     state.lastMessageAt = nowIso();
     rememberPlatformOutboundMessage(state, String(message.id?._serialized || "").trim());
@@ -699,11 +884,16 @@ app.post("/api/v1/channels/:channelKey/messages/send", requireRuntimeToken, asyn
   }
 });
 
-app.listen(runtimePort, "127.0.0.1", () => {
+const server = app.listen(runtimePort, "127.0.0.1", () => {
   console.log(
-    `MINIGREENAPI runtime listening on 127.0.0.1:${runtimePort} | callback=${runtimePlatformCallbackUrl || "disabled"}`
+    `WhatsApp Web Bot runtime listening on 127.0.0.1:${runtimePort} | callback=${runtimePlatformCallbackUrl || "disabled"}`
   );
   bootstrapDefaultChannel().catch((error) => {
     console.error("[runtime] default bootstrap failed", sanitizeError(error));
   });
+});
+
+server.on("error", (error) => {
+  console.error("[runtime] server listen failed", sanitizeError(error));
+  process.exit(1);
 });

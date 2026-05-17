@@ -32,17 +32,15 @@ class Settings(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    app_name: str = "MINIGREENAPI Platform"
+    app_name: str = "WhatsApp Web Bot Platform"
     debug: bool = False
     log_level: str = "INFO"
     cors_origins: list[str] = ["*"]
-    database_path: str = str(ROOT_DIR / "data" / "minigreenapi.sqlite3")
+    database_path: str = str(ROOT_DIR / "data" / "whatsapp_platform.sqlite3")
     platform_admin_token: str = ""
     platform_public_base_url: str = "http://127.0.0.1:8000"
     connect_timeout_seconds: float = 5.0
     request_timeout_seconds: float = 30.0
-    green_api_receive_timeout_seconds: int = 20
-    green_api_poll_interval_seconds: float = 1.0
     runtime_channels_refresh_seconds: float = 15.0
     runtime_channel_heartbeat_seconds: float = 60.0
     runtime_service_base_url: str = "http://127.0.0.1:8011"
@@ -78,22 +76,6 @@ class Settings(BaseModel):
             candidate = ROOT_DIR / candidate
         return str(candidate.resolve())
 
-    @field_validator("green_api_receive_timeout_seconds")
-    @classmethod
-    def ensure_green_api_receive_timeout_range(cls, value: int) -> int:
-        """Match Green API receiveNotification timeout constraints."""
-        if value < 5 or value > 60:
-            raise ValueError("GREEN_API_RECEIVE_TIMEOUT_SECONDS must be between 5 and 60.")
-        return value
-
-    @field_validator("green_api_poll_interval_seconds")
-    @classmethod
-    def ensure_positive_poll_interval(cls, value: float) -> float:
-        """Keep the polling loop from busy-spinning."""
-        if value <= 0:
-            raise ValueError("GREEN_API_POLL_INTERVAL_SECONDS must be positive.")
-        return value
-
     @property
     def admin_auth_enabled(self) -> bool:
         """Return True when admin routes are protected by a configured token."""
@@ -127,18 +109,6 @@ class Settings(BaseModel):
                 os.getenv(
                     "REQUEST_TIMEOUT_SECONDS",
                     cls.model_fields["request_timeout_seconds"].default,
-                )
-            ),
-            green_api_receive_timeout_seconds=int(
-                os.getenv(
-                    "GREEN_API_RECEIVE_TIMEOUT_SECONDS",
-                    cls.model_fields["green_api_receive_timeout_seconds"].default,
-                )
-            ),
-            green_api_poll_interval_seconds=float(
-                os.getenv(
-                    "GREEN_API_POLL_INTERVAL_SECONDS",
-                    cls.model_fields["green_api_poll_interval_seconds"].default,
                 )
             ),
             runtime_channels_refresh_seconds=float(

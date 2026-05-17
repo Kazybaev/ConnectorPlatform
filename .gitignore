@@ -6,3 +6,7 @@ __pycache__/
 *.log
 *.lock
 data/
+runtime/node_modules/
+runtime/.wwebjs_cache/
+runtime/.wwebjs_auth/
+data/runtime/

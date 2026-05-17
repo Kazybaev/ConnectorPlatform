@@ -127,7 +127,7 @@ def whatsapp_connect_page() -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>MINIGREENAPI | Подключение WhatsApp</title>
+  <title>WhatsApp Web Bot Platform | Подключение WhatsApp</title>
   <meta name="description" content="Простое подключение платформенного WhatsApp по QR с понятным статусом connected или disconnected." />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -154,8 +154,8 @@ def whatsapp_connect_page() -> str:
         <span class="eyebrow">Self-hosted runtime</span>
         <h1>Подключение WhatsApp через локальный QR</h1>
         <p class="hero-text">
-          Здесь нет Green API и внешнего QR-провайдера. Платформа сама поднимает локальную
-          WhatsApp-сессию через собственный runtime и отдает QR-код напрямую из него.
+          Платформа поднимает локальную WhatsApp Web JS-сессию через собственный runtime
+          и отдает QR-код напрямую из него.
         </p>
         <p class="contract-note connect-hero-note">
           После первого сканирования текущая сессия сохраняется внутри нашего runtime, поэтому страницу

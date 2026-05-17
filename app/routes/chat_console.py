@@ -93,7 +93,7 @@ def chat_console_page() -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>MINIGREENAPI | Чаты платформы</title>
+  <title>WhatsApp Web Bot Platform | Чаты платформы</title>
   <meta name="description" content="Мониторинг WhatsApp-чатов и ручные ответы из самой платформы." />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -199,7 +199,19 @@ def receive_runtime_incoming_message(
             "reason": "non_personal_chat",
         }
 
-    message = get_chat_store_service().store_incoming_message(payload.channel_key, payload.model_dump())
+    chat_store = get_chat_store_service()
+    raw_message = payload.message if isinstance(payload.message, dict) else {}
+    external_message_id = str(raw_message.get("external_message_id", "")).strip()
+    existing_message = chat_store.get_message_by_external_id(payload.channel_key, external_message_id)
+    message = chat_store.store_incoming_message(payload.channel_key, payload.model_dump())
+    if existing_message is not None:
+        return {
+            "ok": True,
+            "record_id": message.record_id,
+            "skipped": True,
+            "reason": "duplicate_message",
+        }
+
     bot_result: dict[str, object] = {"handled": False, "reason": "not_processed"}
     try:
         bot_result = get_platform_bot_runtime_service().process_runtime_incoming_message(
