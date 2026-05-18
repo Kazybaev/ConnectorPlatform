@@ -386,6 +386,21 @@ class BotRegistryService:
 
         return self._row_to_record(row, connections) if row is not None else None
 
+    def get_connection_activated_at(self, bot_id: str, channel_key: str) -> str:
+        """Return when this bot was last attached to the runtime channel."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT updated_at
+                FROM platform_bot_connections
+                WHERE bot_id = ? AND channel_key = ? AND enabled = 1
+                LIMIT 1
+                """,
+                (bot_id, channel_key),
+            ).fetchone()
+
+        return str(row["updated_at"] or "").strip() if row is not None else ""
+
     def get_thread(self, bot_id: str, channel_key: str, chat_id: str) -> BotThreadRecord | None:
         """Read one persisted provider conversation id for a WhatsApp chat."""
         with self._connect() as connection:

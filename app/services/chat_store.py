@@ -196,6 +196,13 @@ class ChatStoreService:
         sender_id = str(message.get("sender_id", "")).strip() or chat_id
         text = str(message.get("text", "")).strip()
         message_type = str(message.get("message_type", "text")).strip() or "text"
+        from_me = bool(message.get("from_me", False))
+        self_chat = bool(message.get("self_chat", False))
+        direction = "outbound" if from_me and not self_chat else "inbound"
+        source = "whatsapp" if direction == "outbound" else "runtime"
+        status = "synced" if direction == "outbound" else "received"
+        if direction == "outbound" and not sender_name:
+            sender_name = "WhatsApp account"
         created_at = normalize_chat_timestamp(message.get("timestamp"))
         record_id = f"chatmsg_{uuid4().hex[:14]}"
         raw_payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
@@ -213,40 +220,54 @@ class ChatStoreService:
                 if existing is not None:
                     return self._row_to_message(existing)
 
-            connection.execute(
-                """
-                INSERT INTO chat_messages (
-                    record_id,
-                    channel_key,
-                    chat_id,
-                    external_message_id,
-                    direction,
-                    sender_id,
-                    sender_name,
-                    text,
-                    message_type,
-                    source,
-                    status,
-                    created_at,
-                    raw_payload_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    record_id,
-                    channel_key,
-                    chat_id,
-                    external_message_id,
-                    "inbound",
-                    sender_id,
-                    sender_name,
-                    text,
-                    message_type,
-                    "runtime",
-                    "received",
-                    created_at,
-                    raw_payload_json,
-                ),
-            )
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO chat_messages (
+                        record_id,
+                        channel_key,
+                        chat_id,
+                        external_message_id,
+                        direction,
+                        sender_id,
+                        sender_name,
+                        text,
+                        message_type,
+                        source,
+                        status,
+                        created_at,
+                        raw_payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record_id,
+                        channel_key,
+                        chat_id,
+                        external_message_id,
+                        direction,
+                        sender_id,
+                        sender_name,
+                        text,
+                        message_type,
+                        source,
+                        status,
+                        created_at,
+                        raw_payload_json,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                if external_message_id:
+                    existing = connection.execute(
+                        """
+                        SELECT *
+                        FROM chat_messages
+                        WHERE channel_key = ? AND external_message_id = ?
+                        """,
+                        (channel_key, external_message_id),
+                    ).fetchone()
+                    if existing is not None:
+                        return self._row_to_message(existing)
+                raise
 
             self._upsert_conversation(
                 connection,
@@ -257,9 +278,10 @@ class ChatStoreService:
                 avatar_url="",
                 last_message_text=text,
                 last_message_at=created_at,
-                last_direction="inbound",
+                last_direction=direction,
                 last_sender_name=sender_name,
-                unread_increment=1,
+                unread_increment=0 if direction == "outbound" else 1,
+                reset_unread=direction == "outbound",
             )
             connection.commit()
 
@@ -290,40 +312,117 @@ class ChatStoreService:
         payload_json = json.dumps(raw_payload or {}, ensure_ascii=False, sort_keys=True)
 
         with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO chat_messages (
-                    record_id,
-                    channel_key,
-                    chat_id,
-                    external_message_id,
-                    direction,
-                    sender_id,
-                    sender_name,
-                    text,
-                    message_type,
-                    source,
-                    status,
-                    created_at,
-                    raw_payload_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    record_id,
-                    channel_key,
-                    chat_id,
-                    external_message_id or None,
-                    "outbound",
-                    channel_key,
-                    sender_name,
-                    text,
-                    "text",
-                    source,
-                    status,
-                    created_at,
-                    payload_json,
-                ),
-            )
+            if external_message_id:
+                existing = connection.execute(
+                    """
+                    SELECT *
+                    FROM chat_messages
+                    WHERE channel_key = ? AND external_message_id = ?
+                    """,
+                    (channel_key, external_message_id),
+                ).fetchone()
+                if existing is not None:
+                    existing_created_at = existing["created_at"] or created_at
+                    next_text = text or str(existing["text"] or "").strip()
+                    next_sender_name = sender_name or str(existing["sender_name"] or "").strip()
+                    connection.execute(
+                        """
+                        UPDATE chat_messages
+                        SET
+                            chat_id = ?,
+                            direction = 'outbound',
+                            sender_id = ?,
+                            sender_name = ?,
+                            text = ?,
+                            message_type = 'text',
+                            source = ?,
+                            status = ?,
+                            raw_payload_json = ?
+                        WHERE record_id = ?
+                        """,
+                        (
+                            chat_id,
+                            channel_key,
+                            next_sender_name,
+                            next_text,
+                            source,
+                            status,
+                            payload_json,
+                            existing["record_id"],
+                        ),
+                    )
+                    self._upsert_conversation(
+                        connection,
+                        channel_key=channel_key,
+                        chat_id=chat_id,
+                        display_name="",
+                        phone=derive_phone_from_chat_id(chat_id),
+                        avatar_url="",
+                        last_message_text=next_text,
+                        last_message_at=existing_created_at,
+                        last_direction="outbound",
+                        last_sender_name=next_sender_name,
+                        unread_increment=0,
+                        reset_unread=True,
+                    )
+                    connection.commit()
+
+                    row = connection.execute(
+                        "SELECT * FROM chat_messages WHERE record_id = ?",
+                        (existing["record_id"],),
+                    ).fetchone()
+                    if row is None:
+                        raise RuntimeError("Outgoing chat message was updated but could not be read back.")
+                    return self._row_to_message(row)
+
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO chat_messages (
+                        record_id,
+                        channel_key,
+                        chat_id,
+                        external_message_id,
+                        direction,
+                        sender_id,
+                        sender_name,
+                        text,
+                        message_type,
+                        source,
+                        status,
+                        created_at,
+                        raw_payload_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record_id,
+                        channel_key,
+                        chat_id,
+                        external_message_id or None,
+                        "outbound",
+                        channel_key,
+                        sender_name,
+                        text,
+                        "text",
+                        source,
+                        status,
+                        created_at,
+                        payload_json,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                if external_message_id:
+                    existing = connection.execute(
+                        """
+                        SELECT *
+                        FROM chat_messages
+                        WHERE channel_key = ? AND external_message_id = ?
+                        """,
+                        (channel_key, external_message_id),
+                    ).fetchone()
+                    if existing is not None:
+                        return self._row_to_message(existing)
+                raise
 
             self._upsert_conversation(
                 connection,

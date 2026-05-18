@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Header, HTTPException, status
 from fastapi.responses import HTMLResponse
 
@@ -17,6 +19,7 @@ from app.utils.config import get_settings
 
 router = APIRouter(include_in_schema=False)
 api_router = APIRouter(tags=["chat-console"])
+logger = logging.getLogger(__name__)
 
 
 def serialize_conversation(record: ChatConversationRecord) -> PlatformConversationResponse:
@@ -82,6 +85,9 @@ def should_store_personal_runtime_message(payload: RuntimeIncomingMessageRequest
     if bool(message.get("is_broadcast", False)) or chat_id == "status@broadcast" or chat_id.endswith("@broadcast"):
         return False
 
+    if bool(message.get("is_newsletter", False)) or chat_id.endswith("@newsletter"):
+        return False
+
     return True
 
 
@@ -93,7 +99,7 @@ def chat_console_page() -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>WhatsApp Web Bot Platform | Чаты платформы</title>
+  <title>AI Connector | Чаты платформы</title>
   <meta name="description" content="Мониторинг WhatsApp-чатов и ручные ответы из самой платформы." />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -220,6 +226,9 @@ def receive_runtime_incoming_message(
         )
     except PlatformBotRuntimeError as exc:
         bot_result = {"handled": False, "reason": str(exc)}
+    except Exception as exc:
+        logger.exception("Unexpected bot processing error for runtime message")
+        bot_result = {"handled": False, "reason": f"bot_processing_error:{exc}"}
     return {
         "ok": True,
         "record_id": message.record_id,

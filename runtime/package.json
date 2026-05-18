@@ -1,8 +1,8 @@
 {
-  "name": "whatsapp-web-bot-runtime",
+  "name": "ai-connector-runtime",
   "version": "1.0.0",
   "private": true,
-  "description": "Self-hosted WhatsApp runtime for WhatsApp Web Bot Platform.",
+  "description": "Self-hosted WhatsApp runtime for AI Connector.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

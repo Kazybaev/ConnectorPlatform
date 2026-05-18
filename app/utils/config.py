@@ -32,7 +32,7 @@ class Settings(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    app_name: str = "WhatsApp Web Bot Platform"
+    app_name: str = "AI Connector"
     debug: bool = False
     log_level: str = "INFO"
     cors_origins: list[str] = ["*"]

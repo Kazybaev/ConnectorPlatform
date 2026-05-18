@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Any
 
@@ -44,6 +45,47 @@ def split_text_chunks(text: str, chunk_size: int = MESSAGE_CHUNK_SIZE) -> list[s
     return chunks
 
 
+def epoch_ms(value: Any) -> int:
+    """Convert runtime timestamps or ISO strings to epoch milliseconds."""
+    if value is None or value == "":
+        return 0
+
+    if isinstance(value, (int, float)):
+        parsed = float(value)
+        if parsed <= 0:
+            return 0
+        return int(parsed if parsed > 10_000_000_000 else parsed * 1000)
+
+    text = str(value).strip()
+    if not text:
+        return 0
+
+    try:
+        parsed_number = float(text)
+    except ValueError:
+        parsed_number = 0
+    if parsed_number > 0:
+        return int(parsed_number if parsed_number > 10_000_000_000 else parsed_number * 1000)
+
+    try:
+        parsed_datetime = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return 0
+
+    if parsed_datetime.tzinfo is None:
+        parsed_datetime = parsed_datetime.replace(tzinfo=UTC)
+    return int(parsed_datetime.astimezone(UTC).timestamp() * 1000)
+
+
+def message_sent_epoch_ms(message: dict[str, Any]) -> int:
+    """Prefer the WhatsApp sent time, then fall back to runtime receive time."""
+    return (
+        epoch_ms(message.get("timestamp_ms"))
+        or epoch_ms(message.get("timestamp"))
+        or epoch_ms(message.get("runtime_received_at"))
+    )
+
+
 class PlatformBotRuntimeService:
     """Execute platform-managed bots directly from incoming runtime events."""
 
@@ -80,6 +122,20 @@ class PlatformBotRuntimeService:
 
         if not bot.enabled:
             return {"handled": False, "reason": "bot_disabled", "bot_id": bot.id}
+
+        bot_activated_at = get_bot_registry_service().get_connection_activated_at(bot.id, channel_key)
+        activation_cutoff_ms = max(
+            epoch_ms(message.get("runtime_activated_at")),
+            epoch_ms(bot_activated_at),
+        )
+        sent_at_ms = message_sent_epoch_ms(message)
+        if activation_cutoff_ms and sent_at_ms and sent_at_ms < activation_cutoff_ms:
+            return {
+                "handled": False,
+                "reason": "before_bot_activation",
+                "bot_id": bot.id,
+                "bot_activated_at": bot_activated_at,
+            }
 
         if bot.engine_type != "dify":
             raise PlatformBotRuntimeError(
@@ -268,8 +324,13 @@ class PlatformBotRuntimeService:
     def _build_contextual_query(self, text: str, context_text: str) -> str:
         """Keep the current user message clear while giving Dify recent WhatsApp context."""
         return (
-            "Recent WhatsApp context. Use it only to understand the conversation; "
-            "do not answer old messages.\n"
+            "You are replying in an existing WhatsApp conversation.\n"
+            "Use the recent WhatsApp context only to understand the dialogue, but answer only the latest user message.\n"
+            "Do not answer old messages from the context.\n"
+            "Do not greet again, do not introduce yourself again, and do not restart the conversation if the context is not empty.\n"
+            "If template variables such as {{role}} or {{company}} are unknown, do not print the placeholders.\n"
+            "Continue naturally in the same language and tone as the latest user message.\n\n"
+            "Recent WhatsApp context:\n"
             f"{context_text}\n\n"
             "Latest user message to answer now:\n"
             f"{text}"
@@ -361,6 +422,12 @@ class PlatformBotRuntimeService:
             "whatsapp_history",
         }
 
+        configured_variables = {
+            variable.key.casefold(): variable.default_value
+            for variable in bot.variables
+            if variable.default_value and variable.default_value != "configured-server-side"
+        }
+
         inputs: dict[str, Any] = {chosen_variable: text}
         if context_text:
             for variable in variables:
@@ -369,6 +436,17 @@ class PlatformBotRuntimeService:
                     continue
                 if normalized in context_variables or "context" in normalized or "history" in normalized:
                     inputs[variable] = context_text
+                    continue
+                if normalized in configured_variables:
+                    inputs[variable] = configured_variables[normalized]
+
+        if not context_text:
+            for variable in variables:
+                normalized = variable.casefold()
+                if variable == chosen_variable or variable in inputs:
+                    continue
+                if normalized in configured_variables:
+                    inputs[variable] = configured_variables[normalized]
 
         return inputs
 

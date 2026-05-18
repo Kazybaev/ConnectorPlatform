@@ -1,4 +1,4 @@
-# WhatsApp Web Bot Platform
+# AI Connector
 
 Self-hosted WhatsApp bot platform based on `whatsapp-web.js`.
 
@@ -33,7 +33,7 @@ Copy-Item .env.example .env
 Recommended `.env`:
 
 ```env
-APP_NAME=WhatsApp Web Bot Platform
+APP_NAME=AI Connector
 DEBUG=false
 LOG_LEVEL=INFO
 CORS_ORIGINS=*

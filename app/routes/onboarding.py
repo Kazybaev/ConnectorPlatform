@@ -127,7 +127,7 @@ def whatsapp_connect_page() -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>WhatsApp Web Bot Platform | Подключение WhatsApp</title>
+  <title>AI Connector | Подключение WhatsApp</title>
   <meta name="description" content="Простое подключение платформенного WhatsApp по QR с понятным статусом connected или disconnected." />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>

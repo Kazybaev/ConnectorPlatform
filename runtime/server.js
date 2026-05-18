@@ -53,6 +53,8 @@ const configuredConnectStallMs = Number(process.env.RUNTIME_CONNECT_STALL_MS || 
 const connectStallMs = Number.isFinite(configuredConnectStallMs)
   ? Math.max(30000, configuredConnectStallMs)
   : 90000;
+const platformCallbackRetryMs = 5000;
+const platformCallbackQueueMaxSize = 500;
 
 fs.mkdirSync(sessionRoot, { recursive: true });
 
@@ -121,6 +123,7 @@ function buildInitialState(channelKey, displayName) {
     recentForwardedMessageIds: new Map(),
     pendingForwardedMessageIds: new Set(),
     recentPlatformOutboundMessageIds: new Map(),
+    pendingPlatformCallbacks: [],
     reconnectTimer: null,
     reconnectAttempts: 0,
     isResetting: false,
@@ -315,6 +318,95 @@ function shouldIgnoreRuntimeMessage(state, messageId) {
   return false;
 }
 
+function platformCallbackKey(payload) {
+  const message = payload?.message || {};
+  const messageId = String(message.external_message_id || "").trim();
+  if (messageId) {
+    return `${payload.channel_key || ""}:${messageId}`;
+  }
+  return "";
+}
+
+function enqueuePlatformCallback(state, payload, reason) {
+  const key = platformCallbackKey(payload);
+  if (key && state.pendingPlatformCallbacks.some((item) => item.key === key)) {
+    return;
+  }
+
+  if (state.pendingPlatformCallbacks.length >= platformCallbackQueueMaxSize) {
+    state.pendingPlatformCallbacks.shift();
+  }
+
+  state.pendingPlatformCallbacks.push({
+    key,
+    payload,
+    attempts: 0,
+    queuedAt: nowIso(),
+    lastError: String(reason || "").trim()
+  });
+}
+
+async function sendPayloadToPlatform(state, payload, options = {}) {
+  if (!runtimePlatformCallbackUrl) {
+    return false;
+  }
+
+  const queueOnFailure = options.queueOnFailure !== false;
+  const headers = {
+    "Content-Type": "application/json"
+  };
+  if (runtimePlatformCallbackToken) {
+    headers["X-Runtime-Callback-Token"] = runtimePlatformCallbackToken;
+  }
+
+  try {
+    const response = await fetch(runtimePlatformCallbackUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      state.lastError = detail
+        ? `Platform inbox callback failed: ${detail}`
+        : `Platform inbox callback failed with status ${response.status}.`;
+      console.error(`[runtime:${state.channelId}] platform callback failed`, state.lastError);
+      if (queueOnFailure) {
+        enqueuePlatformCallback(state, payload, state.lastError);
+      }
+      return false;
+    }
+    if (String(state.lastError || "").startsWith("Platform inbox callback failed:")) {
+      state.lastError = "";
+    }
+    return true;
+  } catch (error) {
+    state.lastError = `Platform inbox callback failed: ${sanitizeError(error)}`;
+    console.error(`[runtime:${state.channelId}] platform callback error`, state.lastError);
+    if (queueOnFailure) {
+      enqueuePlatformCallback(state, payload, state.lastError);
+    }
+    return false;
+  }
+}
+
+async function flushPlatformCallbackQueue(state) {
+  if (!state.pendingPlatformCallbacks.length) {
+    return;
+  }
+
+  const remaining = [];
+  for (const item of state.pendingPlatformCallbacks) {
+    const ok = await sendPayloadToPlatform(state, item.payload, { queueOnFailure: false });
+    if (!ok) {
+      item.attempts += 1;
+      item.lastError = state.lastError;
+      remaining.push(item);
+    }
+  }
+  state.pendingPlatformCallbacks = remaining;
+}
+
 async function inspectMessageChat(state, message) {
   let chat = null;
   try {
@@ -345,15 +437,18 @@ async function inspectMessageChat(state, message) {
   const chatServer = String(chat?.id?.server || "").trim().toLowerCase();
   const normalizedChatId = chatId.toLowerCase();
   const isGroup = Boolean(chat?.isGroup) || normalizedChatId.endsWith("@g.us") || chatServer === "g.us";
+  const isNewsletter = normalizedChatId.endsWith("@newsletter") || chatServer === "newsletter";
   const isBroadcast =
     normalizedChatId === "status@broadcast" ||
     normalizedChatId.endsWith("@broadcast") ||
-    chatServer === "broadcast";
+    chatServer === "broadcast" ||
+    isNewsletter;
 
   return {
     chatId,
     isGroup,
     isBroadcast,
+    isNewsletter,
     chatServer
   };
 }
@@ -388,20 +483,24 @@ async function handleRuntimeMessageEvent(state, message, eventName) {
           chatId,
           eventName,
           isGroup: chatContext.isGroup,
-          isBroadcast: chatContext.isBroadcast
+          isBroadcast: chatContext.isBroadcast,
+          isNewsletter: chatContext.isNewsletter
         })
       );
       return;
     }
 
+    const fromMe = Boolean(message.fromMe);
     const isSelfChat = Boolean(ownWid && chatId && chatId === ownWid);
-    const allowBotReply = Boolean(message.fromMe && isSelfChat);
-
-    if (message.fromMe && !allowBotReply) {
-      return;
-    }
-
-    const botEligibility = resolveBotEligibility(state, message);
+    const allowBotReply = Boolean(fromMe && isSelfChat);
+    const botEligibility =
+      fromMe && !allowBotReply
+        ? {
+            botEligible: false,
+            botSkipReason: "from_me",
+            messageTimestampMs: messageTimestampMs(message)
+          }
+        : resolveBotEligibility(state, message);
     const posted = await postIncomingMessageToPlatform(state, message, {
       chatId,
       eventName,
@@ -412,6 +511,7 @@ async function handleRuntimeMessageEvent(state, message, eventName) {
       messageTimestampMs: botEligibility.messageTimestampMs,
       isGroup: chatContext.isGroup,
       isBroadcast: chatContext.isBroadcast,
+      isNewsletter: chatContext.isNewsletter,
       chatType: chatContext.chatServer
     });
     if (posted && messageId) {
@@ -423,7 +523,7 @@ async function handleRuntimeMessageEvent(state, message, eventName) {
         JSON.stringify({
           messageId,
           chatId,
-          fromMe: Boolean(message.fromMe),
+          fromMe,
           isSelfChat,
           botEligible: botEligibility.botEligible,
           botSkipReason: botEligibility.botSkipReason,
@@ -480,38 +580,13 @@ async function postIncomingMessageToPlatform(state, message, options = {}) {
       bot_skip_reason: botEligible ? "" : (botSkipReason || "not_bot_eligible"),
       is_group: Boolean(options.isGroup),
       is_broadcast: Boolean(options.isBroadcast),
+      is_newsletter: Boolean(options.isNewsletter),
       chat_type: String(options.chatType || "").trim(),
       event_source: String(options.eventName || "message").trim() || "message"
     }
   };
 
-  const headers = {
-    "Content-Type": "application/json"
-  };
-  if (runtimePlatformCallbackToken) {
-    headers["X-Runtime-Callback-Token"] = runtimePlatformCallbackToken;
-  }
-
-  try {
-    const response = await fetch(runtimePlatformCallbackUrl, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload)
-    });
-    if (!response.ok) {
-      const detail = await response.text().catch(() => "");
-      state.lastError = detail
-        ? `Platform inbox callback failed: ${detail}`
-        : `Platform inbox callback failed with status ${response.status}.`;
-      console.error(`[runtime:${state.channelId}] platform callback failed`, state.lastError);
-      return false;
-    }
-    return true;
-  } catch (error) {
-    state.lastError = `Platform inbox callback failed: ${sanitizeError(error)}`;
-    console.error(`[runtime:${state.channelId}] platform callback error`, state.lastError);
-    return false;
-  }
+  return sendPayloadToPlatform(state, payload);
 }
 
 async function waitForRenderableState(state, timeoutMs = 15000) {
@@ -789,10 +864,23 @@ async function removeSessionDirectoryWithRetries(targetDirectory) {
   throw lastError || new Error(`Could not remove session directory: ${targetDirectory}`);
 }
 
+const callbackQueueTimer = setInterval(() => {
+  for (const state of channelStates.values()) {
+    flushPlatformCallbackQueue(state).catch((error) => {
+      state.lastError = `Platform callback retry failed: ${sanitizeError(error)}`;
+      console.error(`[runtime:${state.channelId}] platform callback retry error`, state.lastError);
+    });
+  }
+}, platformCallbackRetryMs);
+
+if (typeof callbackQueueTimer.unref === "function") {
+  callbackQueueTimer.unref();
+}
+
 app.get("/health", (_req, res) => {
   res.json({
     status: "ok",
-    service: "whatsapp-web-bot-runtime",
+    service: "ai-connector-runtime",
     channels: [...channelStates.keys()],
     callback_configured: Boolean(runtimePlatformCallbackUrl),
     callback_url: runtimePlatformCallbackUrl || ""
@@ -886,7 +974,7 @@ app.post("/api/v1/channels/:channelKey/messages/send", requireRuntimeToken, asyn
 
 const server = app.listen(runtimePort, "127.0.0.1", () => {
   console.log(
-    `WhatsApp Web Bot runtime listening on 127.0.0.1:${runtimePort} | callback=${runtimePlatformCallbackUrl || "disabled"}`
+    `AI Connector runtime listening on 127.0.0.1:${runtimePort} | callback=${runtimePlatformCallbackUrl || "disabled"}`
   );
   bootstrapDefaultChannel().catch((error) => {
     console.error("[runtime] default bootstrap failed", sanitizeError(error));

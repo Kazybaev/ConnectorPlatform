@@ -177,7 +177,7 @@ def bot_console_page() -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>WhatsApp Web Bot Platform | Боты платформы</title>
+  <title>AI Connector | Боты платформы</title>
   <meta name="description" content="Каталог дефолтных и кастомных ботов платформы: Dify, n8n и webhook-интеграции с инструкциями по переменным." />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
