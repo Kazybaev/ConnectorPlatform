@@ -213,6 +213,9 @@ class BotRegistryService:
             )
             connection.commit()
 
+        if payload.enabled and not is_default_template:
+            return self.connect_bot_to_channel(bot_id, linked_channel_key)
+
         record = self.get_bot(bot_id)
         if record is None:
             raise RuntimeError("Bot was created but could not be loaded back.")
@@ -247,13 +250,30 @@ class BotRegistryService:
         return refreshed
 
     def ensure_default_bot_connected(self) -> BotRecord:
-        """Reconnect the default bot to the platform runtime when no other active bot is attached."""
+        """Keep one enabled bot attached to the platform runtime.
+
+        A custom bot that was created with this channel as its linked channel wins over the
+        default template. The default bot is only a fallback for an empty workspace.
+        """
         record = self.sync_default_bot_from_settings()
-        if not record.enabled:
-            return record
 
         channel_key = self._settings.runtime_platform_channel_key
         connected = self.get_connected_bot_for_channel(channel_key)
+        if connected is not None and not connected.is_default_template:
+            return connected
+
+        linked_custom_bot = self.get_enabled_linked_bot_for_channel(channel_key, include_default=False)
+        if linked_custom_bot is not None:
+            return self.connect_bot_to_channel(linked_custom_bot.id, channel_key)
+
+        if self.has_custom_bot_for_channel(channel_key):
+            if connected is not None and connected.is_default_template:
+                self.disconnect_bot_from_channel(connected.id, channel_key)
+            return record
+
+        if not record.enabled:
+            return record
+
         if connected is not None:
             return connected
 
@@ -286,19 +306,32 @@ class BotRegistryService:
                 )
             connection.commit()
 
+        if enabled:
+            channel_key = record.linked_channel_key or self._settings.runtime_platform_channel_key
+            return self.connect_bot_to_channel(bot_id, channel_key)
+
         refreshed = self.get_bot(bot_id)
         if refreshed is None:
             raise RuntimeError("Bot activation state was saved but could not be reloaded.")
         return refreshed
 
     def connect_bot_to_channel(self, bot_id: str, channel_key: str) -> BotRecord:
-        """Activate one bot as the test bot for a specific runtime channel."""
+        """Attach one enabled bot as the active runtime bot for a specific channel."""
         record = self.get_bot(bot_id)
         if record is None:
             raise ValueError("Bot not found.")
 
         now = utc_now_iso()
         with self._connect() as connection:
+            if not record.enabled:
+                connection.execute(
+                    """
+                    UPDATE platform_bots
+                    SET enabled = 1, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (now, bot_id),
+                )
             connection.execute(
                 """
                 UPDATE platform_bot_connections
@@ -330,7 +363,7 @@ class BotRegistryService:
         return refreshed
 
     def disconnect_bot_from_channel(self, bot_id: str, channel_key: str) -> BotRecord:
-        """Disable one test bot connection for the given runtime channel."""
+        """Detach one bot from the active runtime slot for the given channel."""
         record = self.get_bot(bot_id)
         if record is None:
             raise ValueError("Bot not found.")
@@ -352,7 +385,7 @@ class BotRegistryService:
         return refreshed
 
     def get_connected_bot_for_channel(self, channel_key: str) -> BotRecord | None:
-        """Return the currently active test bot for one runtime channel."""
+        """Return the currently active runtime bot for one channel."""
         with self._connect() as connection:
             row = connection.execute(
                 """
@@ -382,6 +415,67 @@ class BotRegistryService:
                 """,
                 (channel_key,),
             ).fetchone()
+            connections = self._load_connected_channels(connection)
+
+        return self._row_to_record(row, connections) if row is not None else None
+
+    def has_custom_bot_for_channel(self, channel_key: str) -> bool:
+        """Return True when the workspace has any non-default bot linked to this channel."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM platform_bots
+                WHERE linked_channel_key = ? AND is_default_template = 0
+                LIMIT 1
+                """,
+                (channel_key,),
+            ).fetchone()
+        return row is not None
+
+    def get_enabled_linked_bot_for_channel(
+        self,
+        channel_key: str,
+        *,
+        include_default: bool = True,
+    ) -> BotRecord | None:
+        """Return the latest enabled bot that declares this channel as its linked channel."""
+        query = """
+                SELECT
+                    id,
+                    name,
+                    slug,
+                    description,
+                    engine_type,
+                    endpoint_url,
+                    authorization_header,
+                    owner_label,
+                    workflow_summary,
+                    linked_project_id,
+                    linked_channel_key,
+                    enabled,
+                    is_default_template,
+                    variables_json,
+                    api_bindings_json,
+                    created_at,
+                    updated_at
+                FROM platform_bots
+                WHERE linked_channel_key = ? AND enabled = 1
+                """
+        parameters: tuple[object, ...]
+        if include_default:
+            parameters = (channel_key,)
+        else:
+            query += " AND is_default_template = 0"
+            parameters = (channel_key,)
+
+        query += """
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT 1
+                """
+
+        with self._connect() as connection:
+            row = connection.execute(query, parameters).fetchone()
             connections = self._load_connected_channels(connection)
 
         return self._row_to_record(row, connections) if row is not None else None

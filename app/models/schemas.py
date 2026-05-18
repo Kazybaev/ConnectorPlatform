@@ -212,13 +212,16 @@ class BotDetailResponse(BotSummaryResponse):
 
 
 class BotTestConnectionResponse(BaseModel):
-    """Result of connecting or disconnecting one test bot to the platform channel."""
+    """Result of connecting or disconnecting one bot to the platform channel."""
 
     model_config = ConfigDict(extra="ignore")
 
+    ok: bool = True
     bot_id: str
     channel_key: str
     enabled: bool
+    bot_ready: bool = False
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 
 class RuntimeIncomingMessageRequest(BaseModel):

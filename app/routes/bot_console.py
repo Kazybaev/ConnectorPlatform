@@ -10,6 +10,7 @@ from app.models.schemas import (
     BotTestConnectionResponse,
 )
 from app.services.bot_registry import BotRecord, get_bot_registry_service
+from app.services.platform_bot_runtime import get_platform_bot_runtime_service
 from app.utils.config import get_settings
 
 router = APIRouter(include_in_schema=False)
@@ -68,7 +69,7 @@ def build_platform_instructions(record: BotRecord) -> list[str]:
             "и отправляет их через WhatsApp Web JS runtime."
         ),
         (
-            "Если нужен только дефолтный тестовый бот без отдельного backend, можно подключить его прямо к platform-main. "
+            "Если нужен Dify-бот без отдельного backend, подключите его прямо к platform-main. "
             "Тогда платформа сама будет отправлять query в Dify и возвращать answer в WhatsApp."
         ),
         (
@@ -94,7 +95,7 @@ def build_platform_instructions(record: BotRecord) -> list[str]:
     if settings.runtime_platform_channel_key in record.connected_channel_keys:
         instructions.insert(
             0,
-            f"Тестовый бот уже подключён к каналу {settings.runtime_platform_channel_key} и будет отвечать на новые входящие сообщения автоматически.",
+            f"Этот бот подключён к каналу {settings.runtime_platform_channel_key} и будет отвечать на новые входящие сообщения автоматически.",
         )
 
     return instructions
@@ -263,8 +264,8 @@ def bot_console_page() -> str:
           </div>
 
           <div class="simple-actions bot-live-actions">
-            <button class="button button-primary" id="connect-test-bot-btn" type="button" disabled>Подключить тестового бота</button>
-            <button class="button button-secondary" id="disconnect-test-bot-btn" type="button" disabled>Отключить тестового бота</button>
+            <button class="button button-primary" id="connect-test-bot-btn" type="button" disabled>Подключить к WhatsApp</button>
+            <button class="button button-secondary" id="disconnect-test-bot-btn" type="button" disabled>Отключить от WhatsApp</button>
             <button class="button button-secondary" id="activate-bot-btn" type="button" disabled>Активировать бота</button>
             <button class="button button-secondary" id="deactivate-bot-btn" type="button" disabled>Деактивировать бота</button>
           </div>
@@ -430,7 +431,7 @@ def bot_console_page() -> str:
       </section>
     </main>
   </div>
-  <script src="/static/bot-studio.js?v=bots-20260515c"></script>
+  <script src="/static/bot-studio.js?v=bots-20260518d"></script>
 </body>
 </html>"""
 
@@ -448,6 +449,19 @@ def get_platform_bot(bot_id: str) -> BotDetailResponse:
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bot not found.")
     return serialize_bot_detail(record)
+
+
+@api_router.get("/api/v1/platform/bots/{bot_id}/diagnostics")
+def diagnose_platform_bot(bot_id: str) -> dict[str, object]:
+    """Return the resolved runtime route for one bot."""
+    record = get_bot_registry_service().get_bot(bot_id)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bot not found.")
+    diagnostics = get_platform_bot_runtime_service().diagnose_bot_route(
+        record,
+        channel_key=get_settings().runtime_platform_channel_key,
+    )
+    return diagnostics
 
 
 @api_router.post("/api/v1/platform/bots", response_model=BotDetailResponse, status_code=status.HTTP_201_CREATED)
@@ -468,40 +482,60 @@ def create_default_platform_bot() -> BotDetailResponse:
 
 
 @api_router.post(
+    "/api/v1/platform/bots/{bot_id}/connect",
+    response_model=BotTestConnectionResponse,
+    status_code=status.HTTP_200_OK,
+)
+@api_router.post(
     "/api/v1/platform/bots/{bot_id}/connect-test",
     response_model=BotTestConnectionResponse,
     status_code=status.HTTP_200_OK,
 )
-def connect_platform_test_bot(bot_id: str) -> BotTestConnectionResponse:
-    """Attach one bot as the active test bot for the platform-owned WhatsApp channel."""
+def connect_platform_bot(bot_id: str) -> BotTestConnectionResponse:
+    """Attach one enabled bot as the active bot for the platform-owned WhatsApp channel."""
     settings = get_settings()
     try:
-        get_bot_registry_service().connect_bot_to_channel(bot_id, settings.runtime_platform_channel_key)
+        record = get_bot_registry_service().connect_bot_to_channel(bot_id, settings.runtime_platform_channel_key)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    diagnostics = get_platform_bot_runtime_service().diagnose_bot_route(
+        record,
+        channel_key=settings.runtime_platform_channel_key,
+    )
     return BotTestConnectionResponse(
+        ok=True,
         bot_id=bot_id,
         channel_key=settings.runtime_platform_channel_key,
         enabled=True,
+        bot_ready=bool(diagnostics.get("ok")),
+        diagnostics=diagnostics,
     )
 
 
+@api_router.post(
+    "/api/v1/platform/bots/{bot_id}/disconnect",
+    response_model=BotTestConnectionResponse,
+    status_code=status.HTTP_200_OK,
+)
 @api_router.post(
     "/api/v1/platform/bots/{bot_id}/disconnect-test",
     response_model=BotTestConnectionResponse,
     status_code=status.HTTP_200_OK,
 )
-def disconnect_platform_test_bot(bot_id: str) -> BotTestConnectionResponse:
-    """Detach one bot from the active test-bot slot for the platform WhatsApp channel."""
+def disconnect_platform_bot(bot_id: str) -> BotTestConnectionResponse:
+    """Detach one bot from the active runtime slot for the platform WhatsApp channel."""
     settings = get_settings()
     try:
         get_bot_registry_service().disconnect_bot_from_channel(bot_id, settings.runtime_platform_channel_key)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return BotTestConnectionResponse(
+        ok=True,
         bot_id=bot_id,
         channel_key=settings.runtime_platform_channel_key,
         enabled=False,
+        bot_ready=False,
+        diagnostics={},
     )
 
 
@@ -512,7 +546,17 @@ def activate_platform_bot(bot_id: str) -> dict[str, object]:
         record = get_bot_registry_service().set_bot_enabled(bot_id, True)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    return {"ok": True, "bot_id": record.id, "enabled": record.enabled}
+    diagnostics = get_platform_bot_runtime_service().diagnose_bot_route(
+        record,
+        channel_key=get_settings().runtime_platform_channel_key,
+    )
+    return {
+        "ok": True,
+        "bot_id": record.id,
+        "enabled": record.enabled,
+        "bot_ready": bool(diagnostics.get("ok")),
+        "diagnostics": diagnostics,
+    }
 
 
 @api_router.post("/api/v1/platform/bots/{bot_id}/deactivate", status_code=status.HTTP_200_OK)

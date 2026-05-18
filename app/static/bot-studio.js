@@ -99,6 +99,23 @@ function parseApiBindings(source) {
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith("#"))
     .map((line) => {
+      const urlMatch = line.match(/https?:\/\/[^\s|]+/);
+      if (!line.includes("|") && urlMatch) {
+        return {
+          name: "Chat bridge",
+          kind: "http",
+          endpoint_url: urlMatch[0],
+          notes: "",
+        };
+      }
+      if (!line.includes("|") && /^authorization\s*:/i.test(line)) {
+        return {
+          name: "Authorization header",
+          kind: "http",
+          endpoint_url: "",
+          notes: line,
+        };
+      }
       const [name = "", kind = "http", endpointUrl = "", notes = ""] = line.split("|");
       return {
         name: name.trim(),
@@ -127,7 +144,7 @@ function renderBotList() {
       const statusClass = bot.enabled ? "status-badge-connected" : "status-badge-warning";
       const statusText = bot.enabled ? "Активен" : "Деактивирован";
       const badgeText = bot.is_default_template ? "Default template" : "Custom bot";
-      const connectionPill = bot.test_connected ? '<span class="pill">test connected</span>' : "";
+      const connectionPill = bot.test_connected ? '<span class="pill">connected</span>' : "";
 
       return `
         <button class="bot-list-card${isActive ? " is-active" : ""}" type="button" data-bot-id="${escapeHtml(bot.id)}">
@@ -167,21 +184,21 @@ function updateConnectionButtons(bot) {
   const connected = Boolean(bot?.test_connected);
 
   if (elements.connectTestBotBtn) {
-    elements.connectTestBotBtn.disabled = !hasBot || !enabled || connected;
+    elements.connectTestBotBtn.disabled = !hasBot || connected;
     if (!hasBot) {
-      elements.connectTestBotBtn.textContent = "Подключить тестового бота";
+      elements.connectTestBotBtn.textContent = "Подключить к WhatsApp";
     } else if (!enabled) {
-      elements.connectTestBotBtn.textContent = "Сначала активируйте бота";
+      elements.connectTestBotBtn.textContent = "Подключить и активировать";
     } else if (connected) {
-      elements.connectTestBotBtn.textContent = "Тестовый бот уже подключён";
+      elements.connectTestBotBtn.textContent = "Бот уже подключён к WhatsApp";
     } else {
-      elements.connectTestBotBtn.textContent = "Подключить тестового бота";
+      elements.connectTestBotBtn.textContent = "Подключить к WhatsApp";
     }
   }
 
   if (elements.disconnectTestBotBtn) {
     elements.disconnectTestBotBtn.disabled = !hasBot || !connected;
-    elements.disconnectTestBotBtn.textContent = "Отключить тестового бота";
+    elements.disconnectTestBotBtn.textContent = "Отключить от WhatsApp";
   }
 
   if (elements.activateBotBtn) {
@@ -261,7 +278,7 @@ function renderBotDetail(bot) {
 
   elements.detailName.textContent = bot.name || "Без названия";
   elements.detailBadge.textContent = bot.test_connected
-    ? "Подключён к WhatsApp"
+    ? "Работает в WhatsApp"
     : bot.enabled
       ? "Готов"
       : "Деактивирован";
@@ -284,6 +301,20 @@ function renderBotDetail(bot) {
   elements.inboundExample.textContent = prettifyJson(bot.inbound_example);
   elements.outboundExample.textContent = prettifyJson(bot.outbound_example);
   updateConnectionButtons(bot);
+}
+
+function formatDiagnosticsMessage(result) {
+  const diagnostics = result?.diagnostics || {};
+  if (!diagnostics || !Object.keys(diagnostics).length) {
+    return "";
+  }
+
+  const route = diagnostics.route_type || "route";
+  const endpoint = diagnostics.endpoint_url || diagnostics.fallback_endpoint_url || "";
+  if (result.bot_ready || diagnostics.ok) {
+    return `Бот подключён. Маршрут: ${route}${endpoint ? ` -> ${endpoint}` : ""}`;
+  }
+  return `Бот подключён, но диагностика требует внимания: ${diagnostics.reason || "маршрут не готов"}`;
 }
 
 async function loadBotDetail(botId) {
@@ -341,12 +372,16 @@ async function connectTestBot() {
   elements.connectTestBotBtn.disabled = true;
   elements.connectTestBotBtn.textContent = "Подключаем...";
   try {
-    await requestJson(`/api/v1/platform/bots/${encodeURIComponent(state.activeBot.id)}/connect-test`, {
+    const result = await requestJson(`/api/v1/platform/bots/${encodeURIComponent(state.activeBot.id)}/connect`, {
       method: "POST",
     });
     await loadBotList({ preserveSelection: true });
+    const message = formatDiagnosticsMessage(result);
+    if (message) {
+      elements.descriptionCard.textContent = message;
+    }
   } catch (error) {
-    elements.descriptionCard.textContent = `Не удалось подключить тестового бота: ${error.message}`;
+    elements.descriptionCard.textContent = `Не удалось подключить бота к WhatsApp: ${error.message}`;
     updateConnectionButtons(state.activeBot);
   }
 }
@@ -359,16 +394,16 @@ async function disconnectTestBot() {
   elements.disconnectTestBotBtn.disabled = true;
   elements.disconnectTestBotBtn.textContent = "Отключаем...";
   try {
-    await requestJson(`/api/v1/platform/bots/${encodeURIComponent(state.activeBot.id)}/disconnect-test`, {
+    await requestJson(`/api/v1/platform/bots/${encodeURIComponent(state.activeBot.id)}/disconnect`, {
       method: "POST",
     });
     await loadBotList({ preserveSelection: true });
   } catch (error) {
-    elements.descriptionCard.textContent = `Не удалось отключить тестового бота: ${error.message}`;
+    elements.descriptionCard.textContent = `Не удалось отключить бота от WhatsApp: ${error.message}`;
     updateConnectionButtons(state.activeBot);
   } finally {
     if (elements.disconnectTestBotBtn) {
-      elements.disconnectTestBotBtn.textContent = "Отключить тестового бота";
+      elements.disconnectTestBotBtn.textContent = "Отключить от WhatsApp";
     }
   }
 }
@@ -381,10 +416,14 @@ async function activateBot() {
   elements.activateBotBtn.disabled = true;
   elements.activateBotBtn.textContent = "Активируем...";
   try {
-    await requestJson(`/api/v1/platform/bots/${encodeURIComponent(state.activeBot.id)}/activate`, {
+    const result = await requestJson(`/api/v1/platform/bots/${encodeURIComponent(state.activeBot.id)}/activate`, {
       method: "POST",
     });
     await loadBotList({ preserveSelection: true });
+    const message = formatDiagnosticsMessage(result);
+    if (message) {
+      elements.descriptionCard.textContent = message;
+    }
   } catch (error) {
     elements.descriptionCard.textContent = `Не удалось активировать бота: ${error.message}`;
     updateConnectionButtons(state.activeBot);

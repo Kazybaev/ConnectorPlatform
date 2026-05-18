@@ -225,6 +225,7 @@ def receive_runtime_incoming_message(
             payload.model_dump(),
         )
     except PlatformBotRuntimeError as exc:
+        logger.warning("Platform bot processing failed: %s", exc)
         bot_result = {"handled": False, "reason": str(exc)}
     except Exception as exc:
         logger.exception("Unexpected bot processing error for runtime message")

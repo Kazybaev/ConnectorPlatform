@@ -113,6 +113,19 @@ class SelfHostedRuntimeService:
             },
         )
 
+    def set_typing(self, channel_key: str, chat_id: str, active: bool) -> dict[str, Any]:
+        """Start or stop the WhatsApp typing indicator for one chat."""
+        self.ensure_runtime_started()
+        return self._request(
+            method="POST",
+            path=f"/api/v1/channels/{channel_key}/typing",
+            json={
+                "chat_id": chat_id,
+                "active": active,
+            },
+            timeout_seconds=10,
+        )
+
     def _spawn_runtime_process(self) -> None:
         if not self._runtime_entrypoint.exists():
             raise SelfHostedRuntimeServiceError(

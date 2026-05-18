@@ -52,6 +52,12 @@ class Settings(BaseModel):
     simple_connect_name: str = "Platform WhatsApp"
     default_bot_dify_base_url: str = ""
     default_bot_dify_api_key: str = ""
+    bot_typing_enabled: bool = True
+    bot_typing_min_seconds: float = 1.2
+    bot_typing_max_seconds: float = 6.0
+    bot_typing_chars_per_second: float = 18.0
+    bot_failure_reply_enabled: bool = True
+    bot_failure_reply_text: str = "Сейчас ассистент временно недоступен. Попробуйте чуть позже."
 
     @field_validator("log_level")
     @classmethod
@@ -59,12 +65,18 @@ class Settings(BaseModel):
         """Keep log level values consistent for the logging setup."""
         return value.upper()
 
-    @field_validator("connect_timeout_seconds", "request_timeout_seconds")
+    @field_validator(
+        "connect_timeout_seconds",
+        "request_timeout_seconds",
+        "bot_typing_min_seconds",
+        "bot_typing_max_seconds",
+        "bot_typing_chars_per_second",
+    )
     @classmethod
     def ensure_positive_timeout(cls, value: float) -> float:
         """Prevent invalid timeout configuration."""
         if value <= 0:
-            raise ValueError("Timeout values must be positive.")
+            raise ValueError("Numeric timing values must be positive.")
         return value
 
     @field_validator("database_path")
@@ -152,6 +164,32 @@ class Settings(BaseModel):
             default_bot_dify_api_key=os.getenv(
                 "DEFAULT_BOT_DIFY_API_KEY",
                 cls.model_fields["default_bot_dify_api_key"].default,
+            ).strip(),
+            bot_typing_enabled=os.getenv("BOT_TYPING_ENABLED", "true").strip().lower()
+            in {"1", "true", "yes", "on"},
+            bot_typing_min_seconds=float(
+                os.getenv(
+                    "BOT_TYPING_MIN_SECONDS",
+                    cls.model_fields["bot_typing_min_seconds"].default,
+                )
+            ),
+            bot_typing_max_seconds=float(
+                os.getenv(
+                    "BOT_TYPING_MAX_SECONDS",
+                    cls.model_fields["bot_typing_max_seconds"].default,
+                )
+            ),
+            bot_typing_chars_per_second=float(
+                os.getenv(
+                    "BOT_TYPING_CHARS_PER_SECOND",
+                    cls.model_fields["bot_typing_chars_per_second"].default,
+                )
+            ),
+            bot_failure_reply_enabled=os.getenv("BOT_FAILURE_REPLY_ENABLED", "true").strip().lower()
+            in {"1", "true", "yes", "on"},
+            bot_failure_reply_text=os.getenv(
+                "BOT_FAILURE_REPLY_TEXT",
+                cls.model_fields["bot_failure_reply_text"].default,
             ).strip(),
         )
 

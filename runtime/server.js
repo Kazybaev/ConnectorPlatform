@@ -55,6 +55,7 @@ const connectStallMs = Number.isFinite(configuredConnectStallMs)
   : 90000;
 const platformCallbackRetryMs = 5000;
 const platformCallbackQueueMaxSize = 500;
+const typingRefreshMs = 10000;
 
 fs.mkdirSync(sessionRoot, { recursive: true });
 
@@ -124,9 +125,11 @@ function buildInitialState(channelKey, displayName) {
     pendingForwardedMessageIds: new Set(),
     recentPlatformOutboundMessageIds: new Map(),
     pendingPlatformCallbacks: [],
+    activeTypingSessions: new Map(),
     reconnectTimer: null,
     reconnectAttempts: 0,
     isResetting: false,
+    stallRestarting: false,
     client: null,
     initPromise: null
   };
@@ -316,6 +319,91 @@ function shouldIgnoreRuntimeMessage(state, messageId) {
     return true;
   }
   return false;
+}
+
+function typingSessionKey(chatId) {
+  return String(chatId || "").trim();
+}
+
+async function sendTypingPulse(state, chatId) {
+  if (!state.client || state.connectionStatus !== "connected") {
+    throw new Error(`Runtime channel is not connected (${state.connectionStatus}).`);
+  }
+
+  const chat = await state.client.getChatById(chatId);
+  await chat.sendStateTyping();
+}
+
+async function startTypingState(state, chatId) {
+  const key = typingSessionKey(chatId);
+  if (!key) {
+    throw new Error("chat_id is required.");
+  }
+
+  await ensureClient(state);
+  await sendTypingPulse(state, key);
+
+  const existing = state.activeTypingSessions.get(key);
+  if (existing?.timer) {
+    existing.lastPulseAt = nowIso();
+    return;
+  }
+
+  const session = {
+    timer: setInterval(() => {
+      sendTypingPulse(state, key)
+        .then(() => {
+          const current = state.activeTypingSessions.get(key);
+          if (current) {
+            current.lastPulseAt = nowIso();
+          }
+        })
+        .catch((error) => {
+          state.lastError = `Typing state failed: ${sanitizeError(error)}`;
+          console.error(`[runtime:${state.channelId}] typing pulse failed`, state.lastError);
+          stopTypingState(state, key, { clearRemoteState: false }).catch(() => {});
+        });
+    }, typingRefreshMs),
+    startedAt: nowIso(),
+    lastPulseAt: nowIso()
+  };
+
+  if (typeof session.timer.unref === "function") {
+    session.timer.unref();
+  }
+
+  state.activeTypingSessions.set(key, session);
+}
+
+async function stopTypingState(state, chatId, options = {}) {
+  const key = typingSessionKey(chatId);
+  if (!key) {
+    return;
+  }
+
+  const existing = state.activeTypingSessions.get(key);
+  if (existing?.timer) {
+    clearInterval(existing.timer);
+  }
+  state.activeTypingSessions.delete(key);
+
+  if (options.clearRemoteState === false || !state.client || state.connectionStatus !== "connected") {
+    return;
+  }
+
+  try {
+    const chat = await state.client.getChatById(key);
+    await chat.clearState();
+  } catch (error) {
+    state.lastError = `Typing clear failed: ${sanitizeError(error)}`;
+  }
+}
+
+async function stopAllTypingStates(state, options = {}) {
+  const chatIds = [...state.activeTypingSessions.keys()];
+  for (const chatId of chatIds) {
+    await stopTypingState(state, chatId, options);
+  }
 }
 
 function platformCallbackKey(payload) {
@@ -707,6 +795,7 @@ async function attachClientEventHandlers(state, client) {
 
   client.on("auth_failure", (message) => {
     setConnectionStatus(state, "disconnected");
+    stopAllTypingStates(state, { clearRemoteState: false }).catch(() => {});
     state.qrAvailable = false;
     state.qrCodeDataUrl = "";
     state.botActivatedAt = "";
@@ -719,6 +808,7 @@ async function attachClientEventHandlers(state, client) {
 
   client.on("disconnected", (reason) => {
     setConnectionStatus(state, "disconnected");
+    stopAllTypingStates(state, { clearRemoteState: false }).catch(() => {});
     state.qrAvailable = false;
     state.qrCodeDataUrl = "";
     state.botActivatedAt = "";
@@ -792,6 +882,32 @@ async function ensureClient(state) {
   return state;
 }
 
+async function restartStalledConnection(state) {
+  if (!isConnectingStalled(state) || state.isResetting || state.stallRestarting) {
+    return;
+  }
+
+  state.stallRestarting = true;
+  try {
+    console.warn(
+      `[runtime:${state.channelId}] watchdog restarting stalled WhatsApp connection`,
+      JSON.stringify({ stallMs: Date.now() - state.connectingSinceMs })
+    );
+    state.lastError = "WhatsApp Web JS connection stalled; watchdog restarted the local browser session.";
+    state.initPromise = null;
+    await destroyClient(state, false);
+    await ensureClient(state);
+    await waitForRenderableState(state, 30000);
+  } catch (error) {
+    state.client = null;
+    state.initPromise = null;
+    state.lastError = sanitizeError(error);
+    scheduleReconnect(state, "watchdog_reconnect_failed");
+  } finally {
+    state.stallRestarting = false;
+  }
+}
+
 async function bootstrapDefaultChannel() {
   const defaultChannelKey = String(process.env.RUNTIME_PLATFORM_CHANNEL_KEY || "").trim();
   if (!defaultChannelKey) {
@@ -819,6 +935,7 @@ async function bootstrapDefaultChannel() {
 
 async function destroyClient(state, wipeSession) {
   clearReconnectTimer(state);
+  await stopAllTypingStates(state, { clearRemoteState: true });
   if (state.client) {
     try {
       await state.client.destroy();
@@ -875,6 +992,19 @@ const callbackQueueTimer = setInterval(() => {
 
 if (typeof callbackQueueTimer.unref === "function") {
   callbackQueueTimer.unref();
+}
+
+const connectionWatchdogTimer = setInterval(() => {
+  for (const state of channelStates.values()) {
+    restartStalledConnection(state).catch((error) => {
+      state.lastError = `Connection watchdog failed: ${sanitizeError(error)}`;
+      console.error(`[runtime:${state.channelId}] connection watchdog error`, state.lastError);
+    });
+  }
+}, 30000);
+
+if (typeof connectionWatchdogTimer.unref === "function") {
+  connectionWatchdogTimer.unref();
 }
 
 app.get("/health", (_req, res) => {
@@ -935,6 +1065,34 @@ app.post("/api/v1/channels/:channelKey/reset", requireRuntimeToken, async (req, 
     res.json(serializeState(state));
   } catch (error) {
     state.isResetting = false;
+    state.lastError = sanitizeError(error);
+    res.status(502).json({ detail: state.lastError });
+  }
+});
+
+app.post("/api/v1/channels/:channelKey/typing", requireRuntimeToken, async (req, res) => {
+  const channelKey = String(req.params.channelKey || "").trim();
+  const state = channelStates.get(channelKey);
+  if (!state) {
+    res.status(404).json({ detail: "Runtime channel not found." });
+    return;
+  }
+
+  const chatId = String(req.body?.chat_id || "").trim();
+  const active = req.body?.active !== false;
+  if (!chatId) {
+    res.status(400).json({ detail: "chat_id is required." });
+    return;
+  }
+
+  try {
+    if (active) {
+      await startTypingState(state, chatId);
+    } else {
+      await stopTypingState(state, chatId);
+    }
+    res.json({ ok: true, channel_id: channelKey, chat_id: chatId, typing: active });
+  } catch (error) {
     state.lastError = sanitizeError(error);
     res.status(502).json({ detail: state.lastError });
   }
