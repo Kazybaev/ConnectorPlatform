@@ -70,6 +70,10 @@ class PlatformChatMessageResponse(BaseModel):
     sender_name: str = ""
     text: str = ""
     message_type: str = "text"
+    media_url: str = ""
+    media_mime_type: str = ""
+    media_filename: str = ""
+    media_caption: str = ""
     source: str = "runtime"
     status: str = ""
     created_at: str

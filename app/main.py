@@ -29,6 +29,8 @@ settings = get_settings()
 configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+MEDIA_DIR = Path(__file__).resolve().parents[1] / "data" / "chat_media"
+MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @asynccontextmanager
@@ -63,6 +65,7 @@ app = FastAPI(
 )
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
 
 app.add_middleware(
     CORSMiddleware,

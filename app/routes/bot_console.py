@@ -81,11 +81,11 @@ def build_platform_instructions(record: BotRecord) -> list[str]:
     if record.engine_type == "dify":
         instructions.append(
             "Для Dify рекомендуемый сценарий такой: Start -> Knowledge -> LLM -> Answer. "
-            "Если нужны CRM-действия или handoff менеджеру, их лучше делать через n8n webhook."
+            "Если нужны дополнительные действия или handoff менеджеру, их лучше делать через n8n webhook."
         )
     elif record.engine_type == "n8n":
         instructions.append(
-            "Для n8n удобно принять webhook, обогатить данные, сходить в CRM/AI и отправить итоговый ответ обратно через API платформы."
+            "Для n8n удобно принять webhook, обогатить данные, вызвать внешний проект или AI и отправить итоговый ответ обратно через API платформы."
         )
     else:
         instructions.append(
@@ -191,7 +191,7 @@ def bot_console_page() -> str:
     <div class="ambient ambient-right"></div>
     <header class="topbar connect-topbar">
       <a class="brand-home" href="/" aria-label="AI Connector">
-        <img class="brand-logo-image" src="/static/community-mark-clean.svg?v=ai-connector-20260519c" alt="AI Connector mark" />
+        <img class="brand-logo-image" src="/static/image.png?v=logo-20260520" alt="AI Connector" />
       </a>
       <nav class="nav-links">
         <a href="/">Платформа</a>
@@ -202,57 +202,100 @@ def bot_console_page() -> str:
     </header>
 
     <main class="onboarding-main bot-studio-main">
-      <section class="onboarding-intro reveal is-visible">
-        <span class="eyebrow">Bot registry</span>
-        <h1>Дефолтный Dify-бот и свои интеграции в одном месте</h1>
+      <section class="onboarding-intro bot-simple-intro reveal is-visible">
+        <span class="eyebrow">Боты WhatsApp</span>
+        <h1>Подключите проект к WhatsApp</h1>
         <p class="hero-text">
-          Здесь можно держать дефолтного бота платформы, кастомных ботов, n8n-связки и все нужные переменные.
-          Для тестового режима платформа может отвечать в WhatsApp напрямую через Dify без отдельного backend.
-        </p>
-        <p class="contract-note connect-hero-note">
-          Ваш текущий WhatsApp-runtime остаётся как есть. Этот раздел управляет только тем,
-          какой бот подключён к сообщениями и как именно он должен отвечать.
+          Укажите проект, URL и путь webhook. Платформа будет получать сообщения из WhatsApp и отправлять их в этот проект.
         </p>
       </section>
 
-      <section class="bot-studio-grid">
-        <aside class="wizard-card bot-catalog-card reveal is-visible">
-          <div class="bot-panel-head">
-            <div>
-              <div class="card-label card-label-no-margin">Каталог ботов</div>
-              <h2 class="simple-connection-name bot-section-title">Реестр подключений</h2>
-              <p class="section-copy section-copy-tight">
-                Дефолтный шаблон можно добавить одной кнопкой, а потом подключить его как тестового бота к platform-main.
-              </p>
-            </div>
-            <div class="bot-panel-actions">
-              <button class="button button-secondary" id="bot-refresh-btn" type="button">Обновить</button>
-              <button class="button button-primary" id="seed-default-bot-btn" type="button">Добавить дефолтный бот</button>
-            </div>
-          </div>
+      <section class="bot-studio-grid bot-studio-grid-simple">
+        <section class="wizard-card bot-builder-card reveal is-visible">
+          <div class="card-label">Интеграция проекта</div>
+          <h2 class="simple-connection-name bot-section-title">Новый проект</h2>
 
-          <div class="bot-catalog-list" id="bot-list">
-            <div class="empty-state-card">Пока нет зарегистрированных ботов. Можно начать с дефолтного Dify-бота или добавить свой.</div>
-          </div>
-        </aside>
+          <form class="stack-form bot-simple-form" id="bot-create-form">
+            <label>
+              <span>Название интеграции</span>
+              <input id="bot-name-input" name="name" placeholder="Например: Мой проект" required />
+            </label>
+
+            <label>
+              <span>Название или ID проекта</span>
+              <input id="bot-project-input" name="linked_project_id" placeholder="Например: project-main" />
+            </label>
+
+            <label>
+              <span>Тип подключения</span>
+              <select id="bot-engine-input" name="engine_type">
+                <option value="webhook">Интеграция проекта</option>
+                <option value="n8n">n8n webhook</option>
+                <option value="dify">Dify</option>
+              </select>
+            </label>
+
+            <div class="bot-type-fields" id="project-integration-fields">
+              <label>
+                <span>Базовый URL проекта</span>
+                <input
+                  id="project-base-url-input"
+                  name="project_base_url"
+                  type="url"
+                  placeholder="https://project.example.com"
+                />
+              </label>
+
+              <label>
+                <span>Путь для WhatsApp-сообщений</span>
+                <input id="project-path-input" name="project_path" placeholder="/api/whatsapp/incoming" value="/api/whatsapp/incoming" />
+              </label>
+            </div>
+
+            <div class="bot-type-fields" id="dify-fields" hidden>
+              <label>
+                <span>Dify API URL</span>
+                <input id="dify-base-url-input" name="dify_base_url" type="url" placeholder="https://api.dify.ai/v1" value="https://api.dify.ai/v1" />
+              </label>
+
+              <label>
+                <span>Dify API Key</span>
+                <input id="dify-api-key-input" name="dify_api_key" placeholder="app-..." />
+              </label>
+            </div>
+
+            <label>
+              <span>Токен или Authorization header</span>
+              <input id="bot-auth-input" name="authorization_header" placeholder="Можно оставить пустым" />
+            </label>
+
+            <div class="bot-contract-note">
+              <strong>Куда будут уходить сообщения</strong>
+              <code id="project-full-url-preview">https://project.example.com/api/whatsapp/incoming</code>
+              <strong>Что должен вернуть проект</strong>
+              <code>{"answer":"Текст ответа клиенту"}</code>
+            </div>
+
+            <div class="wizard-actions">
+              <button class="button button-primary" type="submit">Сохранить и подключить</button>
+              <button class="button button-secondary" type="reset">Очистить</button>
+            </div>
+          </form>
+        </section>
 
         <section class="wizard-card bot-detail-card reveal is-visible">
           <div class="simple-status-row bot-detail-head">
             <div>
-              <div class="card-label card-label-no-margin">Детали бота</div>
+              <div class="card-label card-label-no-margin">Активный бот</div>
               <h2 class="simple-connection-name bot-detail-title" id="bot-detail-name">Выберите бота</h2>
             </div>
             <span class="status-badge status-badge-pending" id="bot-detail-badge">Ожидание</span>
           </div>
 
-          <div class="status-grid bot-summary-grid" id="bot-summary-grid">
+          <div class="status-grid bot-summary-grid bot-summary-grid-simple">
             <div class="status-tile">
-              <span class="status-kicker">Engine</span>
+              <span class="status-kicker">Тип</span>
               <strong id="bot-engine-value">-</strong>
-            </div>
-            <div class="status-tile">
-              <span class="status-kicker">Endpoint</span>
-              <strong id="bot-endpoint-value">-</strong>
             </div>
             <div class="status-tile">
               <span class="status-kicker">Проект</span>
@@ -260,180 +303,43 @@ def bot_console_page() -> str:
             </div>
             <div class="status-tile">
               <span class="status-kicker">Канал</span>
-              <strong id="bot-channel-value">-</strong>
+              <strong id="bot-channel-value">platform-main</strong>
             </div>
+          </div>
+
+          <div class="status-tile bot-endpoint-tile">
+            <span class="status-kicker">URL</span>
+            <strong id="bot-endpoint-value">-</strong>
           </div>
 
           <div class="simple-actions bot-live-actions">
             <button class="button button-primary" id="connect-test-bot-btn" type="button" disabled>Подключить к WhatsApp</button>
-            <button class="button button-secondary" id="disconnect-test-bot-btn" type="button" disabled>Отключить от WhatsApp</button>
-            <button class="button button-secondary" id="activate-bot-btn" type="button" disabled>Активировать бота</button>
-            <button class="button button-secondary" id="deactivate-bot-btn" type="button" disabled>Деактивировать бота</button>
-            <button class="button button-secondary" id="delete-bot-btn" type="button" disabled>Удалить бота</button>
+            <button class="button button-secondary" id="disconnect-test-bot-btn" type="button" disabled>Отключить</button>
+            <button class="button button-secondary" id="delete-bot-btn" type="button" disabled>Удалить</button>
           </div>
 
           <div class="bot-description-card" id="bot-description-card">
-            Выберите бота слева, чтобы посмотреть его переменные, API-связки и инструкцию по подключению.
-          </div>
-
-          <div class="bot-detail-grid">
-            <div class="bot-detail-column">
-              <div class="card-label">Переменные</div>
-              <div class="bot-data-list" id="bot-variable-list">
-                <div class="empty-state-card">Здесь появится список переменных бота.</div>
-              </div>
-            </div>
-            <div class="bot-detail-column">
-              <div class="card-label">API и n8n</div>
-              <div class="bot-data-list" id="bot-api-list">
-                <div class="empty-state-card">Здесь появятся внешние API и webhook-связки.</div>
-              </div>
-            </div>
-          </div>
-
-          <div class="bot-instruction-stack">
-            <div class="result-console-shell">
-              <div class="status-kicker">Инструкция платформы</div>
-              <div class="instruction-list" id="bot-instruction-list">
-                <div class="empty-state-card">После выбора бота здесь появится пошаговая инструкция.</div>
-              </div>
-            </div>
-
-            <div class="result-console-shell">
-              <div class="status-kicker">ENV пример</div>
-              <pre class="result-console" id="bot-env-example"># Выберите бота, чтобы увидеть рекомендованный .env набор.</pre>
-            </div>
-
-            <div class="result-console-shell">
-              <div class="status-kicker">Inbound webhook contract</div>
-              <pre class="result-console" id="bot-inbound-example">{}</pre>
-            </div>
-
-            <div class="result-console-shell">
-              <div class="status-kicker">Outbound send example</div>
-              <pre class="result-console" id="bot-outbound-example">{}</pre>
-            </div>
+            Выберите бота из списка или добавьте нового. Активный бот будет отвечать на входящие сообщения WhatsApp.
           </div>
         </section>
       </section>
 
-      <section class="simple-connect-grid bot-builder-grid">
-        <div class="wizard-card reveal is-visible">
-          <div class="card-label">Добавить своего бота</div>
-          <h2 class="simple-connection-name bot-section-title">Новый bot integration</h2>
-          <p class="section-copy section-copy-tight">
-            Здесь можно зарегистрировать собственного бота, связать его с проектом, указать переменные и внешние API.
-          </p>
-
-          <form class="stack-form" id="bot-create-form">
-            <div class="form-split">
-              <label>
-                <span>Название</span>
-                <input id="bot-name-input" name="name" placeholder="Sales Assistant" required />
-              </label>
-              <label>
-                <span>Slug</span>
-                <input id="bot-slug-input" name="slug" placeholder="sales-assistant" required />
-              </label>
-            </div>
-
-            <div class="form-split">
-              <label>
-                <span>Engine</span>
-                <select id="bot-engine-input" name="engine_type">
-                  <option value="dify">Dify</option>
-                  <option value="n8n">n8n</option>
-                  <option value="webhook">Webhook</option>
-                  <option value="custom">Custom</option>
-                </select>
-              </label>
-              <label>
-                <span>Владелец</span>
-                <input id="bot-owner-input" name="owner_label" placeholder="Platform team / Client team" />
-              </label>
-            </div>
-
-            <label>
-              <span>Описание</span>
-              <textarea id="bot-description-input" name="description" rows="3" placeholder="Что делает этот бот и когда его использовать."></textarea>
-            </label>
-
-            <div class="form-split">
-              <label>
-                <span>Endpoint URL</span>
-                <input id="bot-endpoint-input" name="endpoint_url" placeholder="https://your-bot.example.com/webhook" />
-              </label>
-              <label>
-                <span>Authorization header</span>
-                <input id="bot-auth-input" name="authorization_header" placeholder="Bearer secret-token" />
-              </label>
-            </div>
-
-            <div class="form-split">
-              <label>
-                <span>Linked project ID</span>
-                <input id="bot-project-input" name="linked_project_id" placeholder="proj_xxx" />
-              </label>
-              <label>
-                <span>Linked channel key</span>
-                <input id="bot-channel-input" name="linked_channel_key" placeholder="platform-main" value="platform-main" />
-              </label>
-            </div>
-
-            <label>
-              <span>Кратко про workflow</span>
-              <textarea id="bot-workflow-input" name="workflow_summary" rows="4" placeholder="Например: Start -> CRM lookup -> LLM -> Answer -> n8n handoff"></textarea>
-            </label>
-
-            <label>
-              <span>Переменные бота</span>
-              <textarea id="bot-variables-input" rows="5" placeholder="KEY|required|default|description&#10;PLATFORM_BASE_URL|true|http://127.0.0.1:8000|Базовый адрес платформы&#10;PLATFORM_CHANNEL_KEY|true|platform-main|Канал WhatsApp Web JS runtime"></textarea>
-            </label>
-
-            <label>
-              <span>API и n8n-связки</span>
-              <textarea id="bot-api-bindings-input" rows="5" placeholder="name|kind|url|notes&#10;Primary n8n flow|n8n|https://n8n.example.com/webhook/main|CRM sync and escalation"></textarea>
-            </label>
-
-            <label class="bot-checkbox-row">
-              <input id="bot-enabled-input" name="enabled" type="checkbox" checked />
-              <span>Сразу активировать бота в реестре</span>
-            </label>
-
-            <div class="wizard-actions">
-              <button class="button button-primary" type="submit">Сохранить бота</button>
-              <button class="button button-secondary" id="bot-form-reset-btn" type="reset">Очистить форму</button>
-            </div>
-          </form>
+      <section class="wizard-card bot-catalog-card bot-catalog-card-simple reveal is-visible">
+        <div class="bot-panel-head">
+          <div>
+            <div class="card-label card-label-no-margin">Боты</div>
+            <h2 class="simple-connection-name bot-section-title">Список подключений</h2>
+          </div>
+          <button class="button button-secondary" id="bot-refresh-btn" type="button">Обновить</button>
         </div>
 
-        <aside class="wizard-card wizard-sidebar reveal is-visible">
-          <div class="card-label">Как это работает</div>
-          <h2 class="simple-connection-name bot-section-title">Быстрый onboarding</h2>
-
-          <div class="connect-summary-list">
-            <article>
-              <strong>1. Тестовый режим</strong>
-              <p>Кнопка подключения тестового бота включает прямую схему WhatsApp -> Платформа -> Dify -> WhatsApp без отдельного backend.</p>
-            </article>
-            <article>
-              <strong>2. Свои боты</strong>
-              <p>Любой свой бот можно хранить рядом в каталоге и потом привязать к отдельной логике или внешнему API.</p>
-            </article>
-            <article>
-              <strong>3. n8n и CRM</strong>
-              <p>n8n удобно использовать для побочных действий: CRM, handoff менеджеру, уведомлений и фоновых интеграций.</p>
-            </article>
-            <article>
-              <strong>4. Чаты рядом</strong>
-              <p>История диалогов всё равно остаётся в разделе Чаты, поэтому можно и смотреть сообщения, и вручную отвечать из платформы.</p>
-            </article>
-          </div>
-        </aside>
+        <div class="bot-catalog-list" id="bot-list">
+          <div class="empty-state-card">Пока нет ботов. Добавьте своего бота выше или проверьте настройки дефолтного бота.</div>
+        </div>
       </section>
     </main>
   </div>
-  <script src="/static/bot-studio.js?v=bots-20260519a"></script>
+  <script src="/static/bot-studio.js?v=bots-20260520-project-only"></script>
 </body>
 </html>"""
 

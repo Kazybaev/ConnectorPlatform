@@ -140,7 +140,7 @@ def whatsapp_connect_page() -> str:
     <div class="ambient ambient-right"></div>
     <header class="topbar connect-topbar">
       <a class="brand-home" href="/" aria-label="AI Connector">
-        <img class="brand-logo-image" src="/static/community-mark-clean.svg?v=ai-connector-20260519c" alt="AI Connector mark" />
+        <img class="brand-logo-image" src="/static/image.png?v=logo-20260520" alt="AI Connector" />
       </a>
       <nav class="nav-links">
         <a href="/">Платформа</a>

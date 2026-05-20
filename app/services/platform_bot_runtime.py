@@ -122,11 +122,13 @@ class PlatformBotRuntimeService:
 
         chat_id = str(message.get("chat_id", "")).strip()
         text = str(message.get("text", "")).strip()
-        if not chat_id or not text:
+        media = message.get("media", {}) if isinstance(message.get("media"), dict) else {}
+        has_media = bool(message.get("has_media")) or bool(media.get("data") or media.get("url"))
+        if not chat_id or (not text and not has_media):
             return {"handled": False, "reason": "empty_message"}
 
         message_type = str(message.get("message_type", "text")).strip().lower() or "text"
-        if message_type not in {"text", "chat"}:
+        if message_type not in {"text", "chat"} and not has_media:
             return {"handled": False, "reason": f"unsupported_message_type:{message_type}"}
 
         bot = get_bot_registry_service().get_connected_bot_for_channel(channel_key)
@@ -718,9 +720,12 @@ class PlatformBotRuntimeService:
         context_text: str,
     ) -> dict[str, Any]:
         if config.get("payload_style") == "chat_bridge":
+            message = runtime_payload.get("message", {}) if isinstance(runtime_payload.get("message"), dict) else {}
             return {
                 "query": query_text,
                 "conversation_id": conversation_id,
+                "message": message,
+                "media": message.get("media") if isinstance(message.get("media"), dict) else None,
             }
 
         message = runtime_payload.get("message", {}) if isinstance(runtime_payload.get("message"), dict) else {}

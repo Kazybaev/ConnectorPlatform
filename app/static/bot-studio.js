@@ -7,25 +7,19 @@ const state = {
 const elements = {
   botList: document.getElementById("bot-list"),
   botRefreshBtn: document.getElementById("bot-refresh-btn"),
-  seedDefaultBotBtn: document.getElementById("seed-default-bot-btn"),
   createForm: document.getElementById("bot-create-form"),
   detailName: document.getElementById("bot-detail-name"),
   detailBadge: document.getElementById("bot-detail-badge"),
   engineValue: document.getElementById("bot-engine-value"),
   endpointValue: document.getElementById("bot-endpoint-value"),
-  projectValue: document.getElementById("bot-project-value"),
   channelValue: document.getElementById("bot-channel-value"),
+  projectValue: document.getElementById("bot-project-value"),
+  fullUrlPreview: document.getElementById("project-full-url-preview"),
+  projectFields: document.getElementById("project-integration-fields"),
+  difyFields: document.getElementById("dify-fields"),
   descriptionCard: document.getElementById("bot-description-card"),
-  variableList: document.getElementById("bot-variable-list"),
-  apiList: document.getElementById("bot-api-list"),
-  instructionList: document.getElementById("bot-instruction-list"),
-  envExample: document.getElementById("bot-env-example"),
-  inboundExample: document.getElementById("bot-inbound-example"),
-  outboundExample: document.getElementById("bot-outbound-example"),
-  connectTestBotBtn: document.getElementById("connect-test-bot-btn"),
-  disconnectTestBotBtn: document.getElementById("disconnect-test-bot-btn"),
-  activateBotBtn: document.getElementById("activate-bot-btn"),
-  deactivateBotBtn: document.getElementById("deactivate-bot-btn"),
+  connectBotBtn: document.getElementById("connect-test-bot-btn"),
+  disconnectBotBtn: document.getElementById("disconnect-test-bot-btn"),
   deleteBotBtn: document.getElementById("delete-bot-btn"),
 };
 
@@ -62,70 +56,78 @@ async function requestJson(url, options = {}) {
   return payload;
 }
 
-function formatEnvExample(envExample) {
-  return Object.entries(envExample || {})
-    .map(([key, value]) => `${key}=${value}`)
-    .join("\n");
+function slugify(value) {
+  const base = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 42);
+  return `${base || "bot"}-${Date.now().toString(36)}`;
 }
 
-function prettifyJson(value) {
-  return JSON.stringify(value || {}, null, 2);
+function normalizeAuthorization(value) {
+  const cleaned = String(value || "").trim();
+  if (!cleaned) {
+    return "";
+  }
+  return cleaned.toLowerCase().startsWith("bearer ") ? cleaned : `Bearer ${cleaned}`;
 }
 
-function normalizeTruthText(value) {
-  const normalized = String(value ?? "").trim().toLowerCase();
-  return ["true", "1", "yes", "y", "required", "req"].includes(normalized);
+function readableEngine(value) {
+  return {
+    webhook: "Webhook",
+    n8n: "n8n",
+    dify: "Dify",
+    custom: "Custom",
+  }[String(value || "").toLowerCase()] || "Webhook";
 }
 
-function parseVariableDefinitions(source) {
-  return String(source || "")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith("#"))
-    .map((line) => {
-      const [key = "", required = "true", defaultValue = "", description = ""] = line.split("|");
-      return {
-        key: key.trim().toUpperCase(),
-        required: normalizeTruthText(required),
-        default_value: defaultValue.trim(),
-        description: description.trim(),
-      };
-    })
-    .filter((item) => item.key);
+function joinUrlPath(baseUrl, pathValue) {
+  const base = String(baseUrl || "").trim().replace(/\/+$/, "");
+  const path = String(pathValue || "").trim();
+  if (!base) {
+    return "";
+  }
+  if (!path) {
+    return base;
+  }
+  return `${base}/${path.replace(/^\/+/, "")}`;
 }
 
-function parseApiBindings(source) {
-  return String(source || "")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith("#"))
-    .map((line) => {
-      const urlMatch = line.match(/https?:\/\/[^\s|]+/);
-      if (!line.includes("|") && urlMatch) {
-        return {
-          name: "Chat bridge",
-          kind: "http",
-          endpoint_url: urlMatch[0],
-          notes: "",
-        };
-      }
-      if (!line.includes("|") && /^authorization\s*:/i.test(line)) {
-        return {
-          name: "Authorization header",
-          kind: "http",
-          endpoint_url: "",
-          notes: line,
-        };
-      }
-      const [name = "", kind = "http", endpointUrl = "", notes = ""] = line.split("|");
-      return {
-        name: name.trim(),
-        kind: kind.trim() || "http",
-        endpoint_url: endpointUrl.trim(),
-        notes: notes.trim(),
-      };
-    })
-    .filter((item) => item.name);
+function updateFullUrlPreview() {
+  if (!elements.fullUrlPreview || !elements.createForm) {
+    return;
+  }
+  const formData = new FormData(elements.createForm);
+  const engineType = String(formData.get("engine_type") || "webhook");
+  const fullUrl =
+    engineType === "dify"
+      ? String(formData.get("dify_base_url") || "").trim()
+      : joinUrlPath(formData.get("project_base_url"), formData.get("project_path"));
+  elements.fullUrlPreview.textContent =
+    fullUrl || (engineType === "dify" ? "https://api.dify.ai/v1" : "https://project.example.com/api/whatsapp/incoming");
+}
+
+function updateTypeFields() {
+  if (!elements.createForm) {
+    return;
+  }
+  const formData = new FormData(elements.createForm);
+  const engineType = String(formData.get("engine_type") || "webhook");
+  const isDify = engineType === "dify";
+  if (elements.projectFields) {
+    elements.projectFields.hidden = isDify;
+  }
+  if (elements.difyFields) {
+    elements.difyFields.hidden = !isDify;
+  }
+
+  const authInput = document.getElementById("bot-auth-input");
+  if (authInput) {
+    authInput.placeholder = isDify ? "Можно оставить пустым, если API Key указан выше" : "Можно оставить пустым";
+  }
+  updateFullUrlPreview();
 }
 
 function renderBotList() {
@@ -135,35 +137,29 @@ function renderBotList() {
 
   if (!state.bots.length) {
     elements.botList.innerHTML =
-      '<div class="empty-state-card">Пока нет зарегистрированных ботов. Можно начать с дефолтного Dify-бота или добавить свой.</div>';
+      '<div class="empty-state-card">Пока нет ботов. Добавьте своего бота выше или проверьте настройки дефолтного бота.</div>';
     return;
   }
 
   elements.botList.innerHTML = state.bots
     .map((bot) => {
       const isActive = bot.id === state.activeBotId;
-      const statusClass = bot.enabled ? "status-badge-connected" : "status-badge-warning";
-      const statusText = bot.enabled ? "Активен" : "Деактивирован";
-      const badgeText = bot.is_default_template ? "Default template" : "Custom bot";
-      const connectionPill = bot.test_connected ? '<span class="pill">connected</span>' : "";
+      const connected = Boolean(bot.test_connected);
+      const statusClass = connected ? "status-badge-connected" : bot.enabled ? "status-badge-pending" : "status-badge-warning";
+      const statusText = connected ? "В WhatsApp" : bot.enabled ? "Готов" : "Выключен";
+      const endpoint = bot.endpoint_url || "URL не указан";
+      const botKind = bot.is_default_template ? "Дефолтный бот" : readableEngine(bot.engine_type);
 
       return `
         <button class="bot-list-card${isActive ? " is-active" : ""}" type="button" data-bot-id="${escapeHtml(bot.id)}">
           <div class="bot-list-card-top">
             <div>
               <strong>${escapeHtml(bot.name)}</strong>
-              <span>${escapeHtml(bot.slug)}</span>
+              <span>${escapeHtml(botKind)}</span>
             </div>
             <span class="status-badge ${statusClass}">${escapeHtml(statusText)}</span>
           </div>
-          <p>${escapeHtml(bot.description || "Описание пока не заполнено.")}</p>
-          <div class="bot-card-meta">
-            <span class="pill">${escapeHtml(bot.engine_type)}</span>
-            <span class="pill">${escapeHtml(badgeText)}</span>
-            <span class="pill">${escapeHtml(`${bot.variable_count} vars`)}</span>
-            <span class="pill">${escapeHtml(`${bot.api_binding_count} apis`)}</span>
-            ${connectionPill}
-          </div>
+          <p>${escapeHtml(endpoint)}</p>
         </button>
       `;
     })
@@ -179,103 +175,51 @@ function renderBotList() {
   });
 }
 
-function updateConnectionButtons(bot) {
-  const hasBot = Boolean(bot && bot.id);
-  const enabled = Boolean(bot?.enabled);
+function updateActionButtons(bot) {
+  const hasBot = Boolean(bot?.id);
   const connected = Boolean(bot?.test_connected);
-  const defaultTemplate = Boolean(bot?.is_default_template);
 
-  if (elements.connectTestBotBtn) {
-    elements.connectTestBotBtn.disabled = !hasBot || connected;
-    if (!hasBot) {
-      elements.connectTestBotBtn.textContent = "Подключить к WhatsApp";
-    } else if (!enabled) {
-      elements.connectTestBotBtn.textContent = "Подключить и активировать";
-    } else if (connected) {
-      elements.connectTestBotBtn.textContent = "Бот уже подключён к WhatsApp";
-    } else {
-      elements.connectTestBotBtn.textContent = "Подключить к WhatsApp";
-    }
+  if (elements.connectBotBtn) {
+    elements.connectBotBtn.disabled = !hasBot || connected;
+    elements.connectBotBtn.textContent = connected ? "Уже подключён" : "Подключить к WhatsApp";
   }
-
-  if (elements.disconnectTestBotBtn) {
-    elements.disconnectTestBotBtn.disabled = !hasBot || !connected;
-    elements.disconnectTestBotBtn.textContent = "Отключить от WhatsApp";
+  if (elements.disconnectBotBtn) {
+    elements.disconnectBotBtn.disabled = !hasBot || !connected;
   }
-
-  if (elements.activateBotBtn) {
-    elements.activateBotBtn.disabled = !hasBot || enabled;
-    elements.activateBotBtn.textContent = "Активировать бота";
-  }
-
-  if (elements.deactivateBotBtn) {
-    elements.deactivateBotBtn.disabled = !hasBot || !enabled;
-    elements.deactivateBotBtn.textContent = "Деактивировать бота";
-  }
-
   if (elements.deleteBotBtn) {
-    elements.deleteBotBtn.disabled = !hasBot || defaultTemplate;
-    elements.deleteBotBtn.textContent = defaultTemplate ? "Default нельзя удалить" : "Удалить бота";
+    elements.deleteBotBtn.disabled = !hasBot || Boolean(bot?.is_default_template);
+  }
+}
+
+function setMessage(message) {
+  if (elements.descriptionCard) {
+    elements.descriptionCard.textContent = message;
   }
 }
 
 function resetDetailView() {
   state.activeBot = null;
-  elements.detailName.textContent = "Выберите бота";
-  elements.detailBadge.textContent = "Ожидание";
-  elements.detailBadge.className = "status-badge status-badge-pending";
-  elements.engineValue.textContent = "-";
-  elements.endpointValue.textContent = "-";
-  elements.projectValue.textContent = "-";
-  elements.channelValue.textContent = "-";
-  elements.descriptionCard.textContent =
-    "Выберите бота слева, чтобы посмотреть его переменные, API-связки и инструкцию по подключению.";
-  elements.variableList.innerHTML = '<div class="empty-state-card">Здесь появится список переменных бота.</div>';
-  elements.apiList.innerHTML = '<div class="empty-state-card">Здесь появятся внешние API и webhook-связки.</div>';
-  elements.instructionList.innerHTML =
-    '<div class="empty-state-card">После выбора бота здесь появится пошаговая инструкция.</div>';
-  elements.envExample.textContent = "# Выберите бота, чтобы увидеть рекомендованный .env набор.";
-  elements.inboundExample.textContent = "{}";
-  elements.outboundExample.textContent = "{}";
-  updateConnectionButtons(null);
-}
-
-function renderDetailList(items, kind) {
-  if (!items.length) {
-    return '<div class="empty-state-card">Пока пусто.</div>';
+  if (elements.detailName) {
+    elements.detailName.textContent = "Выберите бота";
   }
-
-  if (kind === "variables") {
-    return items
-      .map(
-        (item) => `
-          <article class="bot-data-card">
-            <div class="bot-data-card-head">
-              <strong>${escapeHtml(item.key)}</strong>
-              <span class="pill">${item.required ? "required" : "optional"}</span>
-            </div>
-            <p>${escapeHtml(item.description || "Описание не заполнено.")}</p>
-            <code>${escapeHtml(item.default_value || "-")}</code>
-          </article>
-        `,
-      )
-      .join("");
+  if (elements.detailBadge) {
+    elements.detailBadge.textContent = "Ожидание";
+    elements.detailBadge.className = "status-badge status-badge-pending";
   }
-
-  return items
-    .map(
-      (item) => `
-        <article class="bot-data-card">
-          <div class="bot-data-card-head">
-            <strong>${escapeHtml(item.name)}</strong>
-            <span class="pill">${escapeHtml(item.kind || "http")}</span>
-          </div>
-          <p>${escapeHtml(item.notes || "Описание связи не заполнено.")}</p>
-          <code>${escapeHtml(item.endpoint_url || "-")}</code>
-        </article>
-      `,
-    )
-    .join("");
+  if (elements.engineValue) {
+    elements.engineValue.textContent = "-";
+  }
+  if (elements.endpointValue) {
+    elements.endpointValue.textContent = "-";
+  }
+  if (elements.channelValue) {
+    elements.channelValue.textContent = "platform-main";
+  }
+  if (elements.projectValue) {
+    elements.projectValue.textContent = "-";
+  }
+  setMessage("Выберите бота из списка или добавьте нового. Активный бот будет отвечать на входящие сообщения WhatsApp.");
+  updateActionButtons(null);
 }
 
 function renderBotDetail(bot) {
@@ -283,45 +227,32 @@ function renderBotDetail(bot) {
   state.activeBot = bot;
   renderBotList();
 
+  const connected = Boolean(bot.test_connected);
   elements.detailName.textContent = bot.name || "Без названия";
-  elements.detailBadge.textContent = bot.test_connected
-    ? "Работает в WhatsApp"
-    : bot.enabled
-      ? "Готов"
-      : "Деактивирован";
+  elements.detailBadge.textContent = connected ? "Работает в WhatsApp" : bot.enabled ? "Готов" : "Выключен";
   elements.detailBadge.className = `status-badge ${
-    bot.test_connected ? "status-badge-connected" : bot.enabled ? "status-badge-pending" : "status-badge-warning"
+    connected ? "status-badge-connected" : bot.enabled ? "status-badge-pending" : "status-badge-warning"
   }`;
-  elements.engineValue.textContent = bot.engine_type || "-";
+  elements.engineValue.textContent = readableEngine(bot.engine_type);
   elements.endpointValue.textContent = bot.endpoint_url || "Не указан";
-  elements.projectValue.textContent = bot.linked_project_id || "Не привязан";
-  elements.channelValue.textContent = bot.connected_channel_keys?.[0] || bot.linked_channel_key || "Не указан";
-  elements.descriptionCard.textContent = bot.workflow_summary || bot.description || "Описание пока не заполнено.";
-  elements.variableList.innerHTML = renderDetailList(bot.variables || [], "variables");
-  elements.apiList.innerHTML = renderDetailList(bot.api_bindings || [], "api");
-  elements.instructionList.innerHTML = (bot.platform_instructions || []).length
-    ? (bot.platform_instructions || [])
-        .map((item) => `<article class="instruction-card">${escapeHtml(item)}</article>`)
-        .join("")
-    : '<div class="empty-state-card">Инструкция пока не заполнена.</div>';
-  elements.envExample.textContent = formatEnvExample(bot.env_example);
-  elements.inboundExample.textContent = prettifyJson(bot.inbound_example);
-  elements.outboundExample.textContent = prettifyJson(bot.outbound_example);
-  updateConnectionButtons(bot);
+  elements.channelValue.textContent = bot.connected_channel_keys?.[0] || bot.linked_channel_key || "platform-main";
+  if (elements.projectValue) {
+    elements.projectValue.textContent = bot.linked_project_id || bot.owner_label || "-";
+  }
+  setMessage(
+    connected
+      ? "Бот подключён к WhatsApp. Новые входящие сообщения будут отправляться этому боту, а ответ вернётся в чат."
+      : "Бот сохранён, но сейчас не подключён к WhatsApp.",
+  );
+  updateActionButtons(bot);
 }
 
 function formatDiagnosticsMessage(result) {
   const diagnostics = result?.diagnostics || {};
-  if (!diagnostics || !Object.keys(diagnostics).length) {
-    return "";
+  if (result?.bot_ready || diagnostics.ok) {
+    return "Бот подключён к WhatsApp и готов отвечать.";
   }
-
-  const route = diagnostics.route_type || "route";
-  const endpoint = diagnostics.endpoint_url || diagnostics.fallback_endpoint_url || "";
-  if (result.bot_ready || diagnostics.ok) {
-    return `Бот подключён. Маршрут: ${route}${endpoint ? ` -> ${endpoint}` : ""}`;
-  }
-  return `Бот подключён, но диагностика требует внимания: ${diagnostics.reason || "маршрут не готов"}`;
+  return `Бот подключён, но endpoint требует проверки: ${diagnostics.reason || "нет успешной диагностики"}`;
 }
 
 async function loadBotDetail(botId) {
@@ -330,7 +261,7 @@ async function loadBotDetail(botId) {
     renderBotDetail(bot);
   } catch (error) {
     resetDetailView();
-    elements.descriptionCard.textContent = `Не удалось загрузить бота: ${error.message}`;
+    setMessage(`Не удалось загрузить бота: ${error.message}`);
   }
 }
 
@@ -346,120 +277,52 @@ async function loadBotList({ preserveSelection = true } = {}) {
     }
 
     const currentId = preserveSelection ? state.activeBotId : null;
-    const nextActiveId = currentId && state.bots.some((bot) => bot.id === currentId) ? currentId : state.bots[0].id;
+    const nextActiveId =
+      currentId && state.bots.some((bot) => bot.id === currentId) ? currentId : state.bots[0].id;
     await loadBotDetail(nextActiveId);
   } catch (error) {
-    elements.botList.innerHTML = `<div class="empty-state-card">Не удалось загрузить реестр ботов: ${escapeHtml(error.message)}</div>`;
+    elements.botList.innerHTML = `<div class="empty-state-card">Не удалось загрузить список ботов: ${escapeHtml(error.message)}</div>`;
     resetDetailView();
   }
 }
 
-async function seedDefaultBot() {
-  elements.seedDefaultBotBtn.disabled = true;
-  elements.seedDefaultBotBtn.textContent = "Добавляем...";
-  try {
-    const bot = await requestJson("/api/v1/platform/bots/default", {
-      method: "POST",
-    });
-    await loadBotList({ preserveSelection: false });
-    renderBotDetail(bot);
-  } catch (error) {
-    elements.descriptionCard.textContent = `Не удалось добавить дефолтный бот: ${error.message}`;
-  } finally {
-    elements.seedDefaultBotBtn.disabled = false;
-    elements.seedDefaultBotBtn.textContent = "Добавить дефолтный бот";
-  }
-}
-
-async function connectTestBot() {
-  if (!state.activeBot?.id || !elements.connectTestBotBtn) {
+async function connectBot() {
+  if (!state.activeBot?.id || !elements.connectBotBtn) {
     return;
   }
 
-  elements.connectTestBotBtn.disabled = true;
-  elements.connectTestBotBtn.textContent = "Подключаем...";
+  elements.connectBotBtn.disabled = true;
+  elements.connectBotBtn.textContent = "Подключаем...";
   try {
     const result = await requestJson(`/api/v1/platform/bots/${encodeURIComponent(state.activeBot.id)}/connect`, {
       method: "POST",
     });
     await loadBotList({ preserveSelection: true });
-    const message = formatDiagnosticsMessage(result);
-    if (message) {
-      elements.descriptionCard.textContent = message;
-    }
+    setMessage(formatDiagnosticsMessage(result));
   } catch (error) {
-    elements.descriptionCard.textContent = `Не удалось подключить бота к WhatsApp: ${error.message}`;
-    updateConnectionButtons(state.activeBot);
+    setMessage(`Не удалось подключить бота: ${error.message}`);
+    updateActionButtons(state.activeBot);
   }
 }
 
-async function disconnectTestBot() {
-  if (!state.activeBot?.id || !elements.disconnectTestBotBtn) {
+async function disconnectBot() {
+  if (!state.activeBot?.id || !elements.disconnectBotBtn) {
     return;
   }
 
-  elements.disconnectTestBotBtn.disabled = true;
-  elements.disconnectTestBotBtn.textContent = "Отключаем...";
+  elements.disconnectBotBtn.disabled = true;
+  elements.disconnectBotBtn.textContent = "Отключаем...";
   try {
     await requestJson(`/api/v1/platform/bots/${encodeURIComponent(state.activeBot.id)}/disconnect`, {
       method: "POST",
     });
     await loadBotList({ preserveSelection: true });
+    setMessage("Бот отключён от WhatsApp.");
   } catch (error) {
-    elements.descriptionCard.textContent = `Не удалось отключить бота от WhatsApp: ${error.message}`;
-    updateConnectionButtons(state.activeBot);
+    setMessage(`Не удалось отключить бота: ${error.message}`);
+    updateActionButtons(state.activeBot);
   } finally {
-    if (elements.disconnectTestBotBtn) {
-      elements.disconnectTestBotBtn.textContent = "Отключить от WhatsApp";
-    }
-  }
-}
-
-async function activateBot() {
-  if (!state.activeBot?.id || !elements.activateBotBtn) {
-    return;
-  }
-
-  elements.activateBotBtn.disabled = true;
-  elements.activateBotBtn.textContent = "Активируем...";
-  try {
-    const result = await requestJson(`/api/v1/platform/bots/${encodeURIComponent(state.activeBot.id)}/activate`, {
-      method: "POST",
-    });
-    await loadBotList({ preserveSelection: true });
-    const message = formatDiagnosticsMessage(result);
-    if (message) {
-      elements.descriptionCard.textContent = message;
-    }
-  } catch (error) {
-    elements.descriptionCard.textContent = `Не удалось активировать бота: ${error.message}`;
-    updateConnectionButtons(state.activeBot);
-  } finally {
-    if (elements.activateBotBtn) {
-      elements.activateBotBtn.textContent = "Активировать бота";
-    }
-  }
-}
-
-async function deactivateBot() {
-  if (!state.activeBot?.id || !elements.deactivateBotBtn) {
-    return;
-  }
-
-  elements.deactivateBotBtn.disabled = true;
-  elements.deactivateBotBtn.textContent = "Деактивируем...";
-  try {
-    await requestJson(`/api/v1/platform/bots/${encodeURIComponent(state.activeBot.id)}/deactivate`, {
-      method: "POST",
-    });
-    await loadBotList({ preserveSelection: true });
-  } catch (error) {
-    elements.descriptionCard.textContent = `Не удалось деактивировать бота: ${error.message}`;
-    updateConnectionButtons(state.activeBot);
-  } finally {
-    if (elements.deactivateBotBtn) {
-      elements.deactivateBotBtn.textContent = "Деактивировать бота";
-    }
+    elements.disconnectBotBtn.textContent = "Отключить";
   }
 }
 
@@ -468,9 +331,7 @@ async function deleteBot() {
     return;
   }
 
-  const confirmed = window.confirm(
-    `Удалить бота "${state.activeBot.name || state.activeBot.slug}"? Его связи с WhatsApp и conversation_id будут очищены.`,
-  );
+  const confirmed = window.confirm(`Удалить бота "${state.activeBot.name || state.activeBot.slug}"?`);
   if (!confirmed) {
     return;
   }
@@ -485,14 +346,12 @@ async function deleteBot() {
     state.activeBotId = null;
     state.activeBot = null;
     await loadBotList({ preserveSelection: false });
-    elements.descriptionCard.textContent = "Бот удалён из реестра.";
+    setMessage("Бот удалён.");
   } catch (error) {
-    elements.descriptionCard.textContent = `Не удалось удалить бота: ${error.message}`;
-    updateConnectionButtons(state.activeBot);
+    setMessage(`Не удалось удалить бота: ${error.message}`);
+    updateActionButtons(state.activeBot);
   } finally {
-    if (elements.deleteBotBtn) {
-      elements.deleteBotBtn.textContent = "Удалить бота";
-    }
+    elements.deleteBotBtn.textContent = "Удалить";
   }
 }
 
@@ -500,25 +359,35 @@ async function handleCreateBot(event) {
   event.preventDefault();
 
   const formData = new FormData(elements.createForm);
+  const name = String(formData.get("name") || "").trim();
+  const projectId = String(formData.get("linked_project_id") || "").trim();
+  const engineType = String(formData.get("engine_type") || "webhook").trim();
+  const isDify = engineType === "dify";
+  const endpointUrl = isDify
+    ? String(formData.get("dify_base_url") || "").trim().replace(/\/+$/, "")
+    : joinUrlPath(formData.get("project_base_url"), formData.get("project_path"));
+  const difyApiKey = String(formData.get("dify_api_key") || "").trim();
+  const authorizationHeader = normalizeAuthorization(difyApiKey || formData.get("authorization_header"));
+
   const payload = {
-    name: String(formData.get("name") || "").trim(),
-    slug: String(formData.get("slug") || "").trim(),
-    description: String(formData.get("description") || "").trim(),
-    engine_type: String(formData.get("engine_type") || "custom").trim(),
-    endpoint_url: String(formData.get("endpoint_url") || "").trim(),
-    authorization_header: String(formData.get("authorization_header") || "").trim(),
-    owner_label: String(formData.get("owner_label") || "").trim(),
-    workflow_summary: String(formData.get("workflow_summary") || "").trim(),
-    linked_project_id: String(formData.get("linked_project_id") || "").trim(),
-    linked_channel_key: String(formData.get("linked_channel_key") || "").trim(),
-    enabled: Boolean(formData.get("enabled")),
-    variables: parseVariableDefinitions(document.getElementById("bot-variables-input").value),
-    api_bindings: parseApiBindings(document.getElementById("bot-api-bindings-input").value),
+    name,
+    slug: slugify(name),
+    description: projectId ? `WhatsApp integration for ${projectId}` : `WhatsApp integration: ${name}`,
+    engine_type: engineType,
+    endpoint_url: endpointUrl,
+    authorization_header: authorizationHeader,
+    owner_label: projectId,
+    workflow_summary: "",
+    linked_project_id: projectId,
+    linked_channel_key: "platform-main",
+    enabled: true,
+    variables: [],
+    api_bindings: [],
   };
 
   const submitButton = elements.createForm.querySelector('button[type="submit"]');
   submitButton.disabled = true;
-  submitButton.textContent = "Сохраняем...";
+  submitButton.textContent = "Сохраняем и подключаем...";
 
   try {
     const bot = await requestJson("/api/v1/platform/bots", {
@@ -529,65 +398,35 @@ async function handleCreateBot(event) {
       body: JSON.stringify(payload),
     });
 
+    const result = await requestJson(`/api/v1/platform/bots/${encodeURIComponent(bot.id)}/connect`, {
+      method: "POST",
+    });
+
     elements.createForm.reset();
-    document.getElementById("bot-channel-input").value = "platform-main";
-    document.getElementById("bot-enabled-input").checked = true;
     await loadBotList({ preserveSelection: false });
-    renderBotDetail(bot);
+    await loadBotDetail(bot.id);
+    setMessage(formatDiagnosticsMessage(result));
   } catch (error) {
-    elements.descriptionCard.textContent = `Не удалось сохранить бота: ${error.message}`;
+    setMessage(`Не удалось добавить бота: ${error.message}`);
   } finally {
     submitButton.disabled = false;
-    submitButton.textContent = "Сохранить бота";
+    submitButton.textContent = "Сохранить и подключить";
   }
-}
-
-function enableRevealObserver() {
-  if (typeof IntersectionObserver !== "function") {
-    document.querySelectorAll(".reveal").forEach((element) => element.classList.add("is-visible"));
-    return;
-  }
-
-  const observer = new IntersectionObserver(
-    (entries) => {
-      entries.forEach((entry) => {
-        if (entry.isIntersecting) {
-          entry.target.classList.add("is-visible");
-        }
-      });
-    },
-    { threshold: 0.18 },
-  );
-
-  document.querySelectorAll(".reveal").forEach((element) => observer.observe(element));
 }
 
 function wireEvents() {
   elements.botRefreshBtn?.addEventListener("click", () => {
     loadBotList();
   });
-  elements.seedDefaultBotBtn?.addEventListener("click", () => {
-    seedDefaultBot();
-  });
-  elements.connectTestBotBtn?.addEventListener("click", () => {
-    connectTestBot();
-  });
-  elements.disconnectTestBotBtn?.addEventListener("click", () => {
-    disconnectTestBot();
-  });
-  elements.activateBotBtn?.addEventListener("click", () => {
-    activateBot();
-  });
-  elements.deactivateBotBtn?.addEventListener("click", () => {
-    deactivateBot();
-  });
-  elements.deleteBotBtn?.addEventListener("click", () => {
-    deleteBot();
-  });
+  elements.connectBotBtn?.addEventListener("click", connectBot);
+  elements.disconnectBotBtn?.addEventListener("click", disconnectBot);
+  elements.deleteBotBtn?.addEventListener("click", deleteBot);
   elements.createForm?.addEventListener("submit", handleCreateBot);
+  elements.createForm?.addEventListener("input", updateTypeFields);
+  elements.createForm?.addEventListener("change", updateTypeFields);
 }
 
 resetDetailView();
 wireEvents();
-enableRevealObserver();
+updateTypeFields();
 loadBotList();

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -12,6 +14,9 @@ from uuid import uuid4
 
 from app.utils.config import Settings, get_settings
 from app.utils.time import utc_now_iso
+
+CHAT_MEDIA_DIR = Path(__file__).resolve().parents[2] / "data" / "chat_media"
+MAX_STORED_MEDIA_BYTES = 20 * 1024 * 1024
 
 
 def normalize_chat_timestamp(value: Any) -> str:
@@ -54,6 +59,53 @@ def is_personal_whatsapp_chat_id(chat_id: str) -> bool:
         return False
 
     return local_part.isdigit()
+
+
+def media_extension(mime_type: str) -> str:
+    """Return a conservative file extension for an incoming media MIME type."""
+    normalized = mime_type.split(";", 1)[0].strip().lower()
+    if normalized == "image/jpeg":
+        return ".jpg"
+    if normalized == "image/png":
+        return ".png"
+    if normalized == "image/webp":
+        return ".webp"
+    if normalized == "image/gif":
+        return ".gif"
+    return mimetypes.guess_extension(normalized) or ".bin"
+
+
+def persist_message_media(channel_key: str, chat_id: str, record_id: str, message: dict[str, Any]) -> None:
+    """Store base64 media from the runtime and add browser/bot friendly metadata."""
+    media = message.get("media")
+    if not isinstance(media, dict) or bool(media.get("skipped")):
+        return
+
+    raw_base64 = str(media.get("data", "")).strip()
+    mime_type = str(media.get("mimetype", "")).strip()
+    if not raw_base64 or not mime_type:
+        return
+
+    try:
+        binary = base64.b64decode(raw_base64, validate=True)
+    except (ValueError, TypeError):
+        return
+
+    if not binary or len(binary) > MAX_STORED_MEDIA_BYTES:
+        return
+
+    extension = media_extension(mime_type)
+    safe_channel = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in channel_key)
+    safe_chat = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in chat_id)
+    relative_path = Path(safe_channel) / safe_chat / f"{record_id}{extension}"
+    target_path = CHAT_MEDIA_DIR / relative_path
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_bytes(binary)
+
+    media["url"] = f"/media/{relative_path.as_posix()}"
+    media["mimetype"] = mime_type
+    media["size_bytes"] = len(binary)
+    media["data_url"] = f"data:{mime_type};base64,{raw_base64}"
 
 
 @dataclass(slots=True)
@@ -224,6 +276,7 @@ class ChatStoreService:
             sender_name = "WhatsApp account"
         created_at = normalize_chat_timestamp(message.get("timestamp"))
         record_id = f"chatmsg_{uuid4().hex[:14]}"
+        persist_message_media(channel_key, chat_id, record_id, message)
         raw_payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
         with self._connect() as connection:
@@ -288,13 +341,17 @@ class ChatStoreService:
                         return self._row_to_message(existing)
                 raise
 
+            conversation_display_name = "" if direction == "outbound" else (
+                sender_name or derive_phone_from_chat_id(chat_id) or chat_id
+            )
+            conversation_avatar_url = "" if direction == "outbound" else avatar_url
             self._upsert_conversation(
                 connection,
                 channel_key=channel_key,
                 chat_id=chat_id,
-                display_name=sender_name or derive_phone_from_chat_id(chat_id) or chat_id,
+                display_name=conversation_display_name,
                 phone=derive_phone_from_chat_id(chat_id),
-                avatar_url=avatar_url,
+                avatar_url=conversation_avatar_url,
                 last_message_text=text,
                 last_message_at=created_at,
                 last_direction=direction,
@@ -476,12 +533,13 @@ class ChatStoreService:
         display_name: str = "",
         phone: str = "",
         avatar_url: str = "",
+        replace_avatar_url: bool = False,
     ) -> None:
         """Update stored contact metadata without changing the message summary."""
         display_name = display_name.strip()
         phone = phone.strip()
         avatar_url = avatar_url.strip()
-        if not any([display_name, phone, avatar_url]):
+        if not any([display_name, phone, avatar_url, replace_avatar_url]):
             return
 
         with self._connect() as connection:
@@ -509,7 +567,7 @@ class ChatStoreService:
                 (
                     display_name or str(existing["display_name"] or "").strip(),
                     phone or str(existing["phone"] or "").strip(),
-                    avatar_url or str(existing["avatar_url"] or "").strip(),
+                    avatar_url if replace_avatar_url else avatar_url or str(existing["avatar_url"] or "").strip(),
                     utc_now_iso(),
                     channel_key,
                     chat_id,

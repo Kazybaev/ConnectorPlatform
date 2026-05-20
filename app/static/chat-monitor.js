@@ -221,7 +221,17 @@
     });
   }
 
-  function renderMessages(messages) {
+  function isMessageStreamNearBottom() {
+    const threshold = 80;
+    return dom.messageStream.scrollHeight - dom.messageStream.scrollTop - dom.messageStream.clientHeight <= threshold;
+  }
+
+  function renderMessages(messages, options = {}) {
+    const forceScrollBottom = Boolean(options.forceScrollBottom);
+    const shouldKeepBottom = forceScrollBottom || isMessageStreamNearBottom();
+    const previousScrollHeight = dom.messageStream.scrollHeight;
+    const previousScrollTop = dom.messageStream.scrollTop;
+
     if (!messages.length) {
       dom.messageStream.innerHTML =
         '<div class="empty-state-card">В этом диалоге еще нет сообщений.</div>';
@@ -238,11 +248,18 @@
           message.direction === "inbound"
             ? avatarMarkup(activeConversation, "inbox-message-avatar")
             : '<div class="inbox-avatar inbox-message-avatar"><span>AI</span></div>';
+        const mediaMarkup = renderMessageMedia(message);
+        const textMarkup = message.text
+          ? `<p>${escapeHtml(message.text)}</p>`
+          : mediaMarkup
+            ? ""
+            : "<p>[пустое сообщение]</p>";
         return `
           <article class="message-row ${sideClass}">
             ${avatar}
             <div class="message-card">
-              <p>${escapeHtml(message.text || "[пустое сообщение]")}</p>
+              ${mediaMarkup}
+              ${textMarkup}
               <div class="message-card-foot">
                 <strong>${escapeHtml(senderName)}</strong>
                 <span>${escapeHtml(formatTime(message.created_at))}</span>
@@ -253,7 +270,35 @@
       })
       .join("");
 
-    dom.messageStream.scrollTop = dom.messageStream.scrollHeight;
+    if (shouldKeepBottom) {
+      dom.messageStream.scrollTop = dom.messageStream.scrollHeight;
+      return;
+    }
+
+    const heightDelta = dom.messageStream.scrollHeight - previousScrollHeight;
+    dom.messageStream.scrollTop = previousScrollTop + Math.max(0, heightDelta);
+  }
+
+  function renderMessageMedia(message) {
+    const mediaUrl = String(message.media_url || "").trim();
+    const mimeType = String(message.media_mime_type || "").trim().toLowerCase();
+    if (!mediaUrl) {
+      return "";
+    }
+
+    if (mimeType.startsWith("image/")) {
+      return `
+        <a class="message-media message-media-image" href="${escapeHtml(mediaUrl)}" target="_blank" rel="noreferrer">
+          <img src="${escapeHtml(mediaUrl)}" alt="${escapeHtml(message.media_caption || "Фото из WhatsApp")}" loading="lazy" />
+        </a>
+      `;
+    }
+
+    return `
+      <a class="message-media message-media-file" href="${escapeHtml(mediaUrl)}" target="_blank" rel="noreferrer">
+        ${escapeHtml(message.media_filename || mimeType || "Файл")}
+      </a>
+    `;
   }
 
   function updateActiveChatHeader(conversation) {
@@ -312,11 +357,11 @@
     updateActiveChatHeader(activeConversation || null);
   }
 
-  async function loadMessages(chatId) {
+  async function loadMessages(chatId, options = {}) {
     const messages = await requestJson(`/api/v1/platform/chats/${encodeURIComponent(chatId)}/messages`, {
       headers: { Accept: "application/json" },
     });
-    renderMessages(messages);
+    renderMessages(messages, options);
   }
 
   async function openConversation(chatId) {
@@ -328,7 +373,7 @@
     await loadConversations(true);
     const activeConversation = state.conversations.find((conversation) => conversation.chat_id === chatId) || null;
     updateActiveChatHeader(activeConversation);
-    await loadMessages(chatId);
+    await loadMessages(chatId, { forceScrollBottom: true });
     setConsole("Диалог открыт.");
   }
 
@@ -354,7 +399,7 @@
       });
       dom.manualReplyInput.value = "";
       await loadConversations(true);
-      await loadMessages(state.activeChatId);
+      await loadMessages(state.activeChatId, { forceScrollBottom: true });
       setConsole("Сообщение отправлено из платформы.", payload);
     } finally {
       dom.sendReplyButton.disabled = false;

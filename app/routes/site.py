@@ -25,7 +25,7 @@ def landing_page() -> str:
   <div class="page-shell">
     <header class="topbar">
       <a class="brand-home" href="/" aria-label="AI Connector">
-        <img class="brand-logo-image" src="/static/community-mark-clean.svg?v=ai-connector-20260519c" alt="AI Connector mark" />
+        <img class="brand-logo-image" src="/static/image.png?v=logo-20260520" alt="AI Connector" />
       </a>
       <nav class="nav-links">
         <a class="is-active" href="/">Платформа</a>

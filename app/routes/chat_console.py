@@ -54,6 +54,8 @@ def serialize_conversation(record: ChatConversationRecord) -> PlatformConversati
 
 def serialize_message(record: ChatMessageRecord) -> PlatformChatMessageResponse:
     """Translate one stored chat message into the API response shape."""
+    raw_message = record.raw_payload.get("message", {}) if isinstance(record.raw_payload.get("message"), dict) else {}
+    media = raw_message.get("media", {}) if isinstance(raw_message.get("media"), dict) else {}
     return PlatformChatMessageResponse(
         record_id=record.record_id,
         channel_key=record.channel_key,
@@ -64,6 +66,10 @@ def serialize_message(record: ChatMessageRecord) -> PlatformChatMessageResponse:
         sender_name=record.sender_name,
         text=record.text,
         message_type=record.message_type,
+        media_url=str(media.get("url", "")).strip(),
+        media_mime_type=str(media.get("mimetype", "")).strip(),
+        media_filename=str(media.get("filename", "")).strip(),
+        media_caption=str(media.get("caption", "")).strip(),
         source=record.source,
         status=record.status,
         created_at=record.created_at,
@@ -122,7 +128,18 @@ def hydrate_conversation_profiles(channel_key: str, conversations: list[ChatConv
     now = time.monotonic()
     chat_ids: list[str] = []
     for conversation in conversations:
-        if conversation.avatar_url.strip():
+        display_name = conversation.display_name.strip()
+        suspected_sender_profile = (
+            conversation.last_direction == "outbound"
+            and display_name
+            and display_name == conversation.last_sender_name.strip()
+        )
+        should_hydrate = (
+            not conversation.avatar_url.strip()
+            or is_placeholder_contact_name(display_name, conversation.chat_id)
+            or suspected_sender_profile
+        )
+        if not should_hydrate:
             continue
 
         cache_key = (channel_key, conversation.chat_id)
@@ -163,11 +180,23 @@ def hydrate_conversation_profiles(channel_key: str, conversations: list[ChatConv
         profile_phone = str(profile.get("phone", "")).strip()
         profile_avatar_url = str(profile.get("avatar_url", "")).strip()
         next_display_name = conversation.display_name
-        if profile_name and is_placeholder_contact_name(conversation.display_name, conversation.chat_id):
+        suspected_sender_profile = (
+            conversation.last_direction == "outbound"
+            and conversation.display_name.strip()
+            and conversation.display_name.strip() == conversation.last_sender_name.strip()
+        )
+        if profile_name and (
+            is_placeholder_contact_name(conversation.display_name, conversation.chat_id)
+            or suspected_sender_profile
+        ):
             next_display_name = profile_name
 
         next_phone = profile_phone or conversation.phone
-        next_avatar_url = profile_avatar_url or conversation.avatar_url
+        next_avatar_url = (
+            profile_avatar_url
+            if suspected_sender_profile
+            else profile_avatar_url or conversation.avatar_url
+        )
         if (
             next_display_name == conversation.display_name
             and next_phone == conversation.phone
@@ -181,6 +210,7 @@ def hydrate_conversation_profiles(channel_key: str, conversations: list[ChatConv
             display_name=next_display_name,
             phone=next_phone,
             avatar_url=next_avatar_url,
+            replace_avatar_url=suspected_sender_profile,
         )
         conversation.display_name = next_display_name
         conversation.phone = next_phone
@@ -206,7 +236,7 @@ def chat_console_page() -> str:
   <div class="inbox-app-shell">
     <header class="inbox-app-topbar">
       <a class="brand-home" href="/" aria-label="AI Connector">
-        <img class="brand-logo-image" src="/static/community-mark-clean.svg?v=ai-connector-20260519c" alt="AI Connector mark" />
+        <img class="brand-logo-image" src="/static/image.png?v=logo-20260520" alt="AI Connector" />
       </a>
       <nav class="nav-links">
         <a href="/">Платформа</a>
@@ -286,7 +316,7 @@ def chat_console_page() -> str:
       </section>
     </main>
   </div>
-  <script src="/static/chat-monitor.js?v=chat-20260519c"></script>
+  <script src="/static/chat-monitor.js?v=chat-20260520-scroll"></script>
 </body>
 </html>"""
 

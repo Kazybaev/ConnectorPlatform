@@ -29,7 +29,7 @@ function loadLocalEnvFile() {
 loadLocalEnvFile();
 
 const app = express();
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "30mb" }));
 
 const platformPublicBaseUrl = String(
   process.env.PLATFORM_PUBLIC_BASE_URL || "http://127.0.0.1:8000"
@@ -65,6 +65,7 @@ const configuredPresenceRefreshMs = Number(process.env.RUNTIME_ONLINE_PRESENCE_R
 const presenceRefreshMs = Number.isFinite(configuredPresenceRefreshMs)
   ? Math.max(5000, configuredPresenceRefreshMs)
   : 15000;
+const maxForwardedMediaBytes = 20 * 1024 * 1024;
 
 fs.mkdirSync(sessionRoot, { recursive: true });
 
@@ -206,6 +207,43 @@ function normalizeIncomingText(message) {
   }
 
   return `[${type}]`;
+}
+
+function mediaByteLength(base64Value) {
+  const value = String(base64Value || "");
+  if (!value) {
+    return 0;
+  }
+  return Math.floor((value.length * 3) / 4);
+}
+
+async function resolveIncomingMedia(message) {
+  if (!message?.hasMedia || typeof message.downloadMedia !== "function") {
+    return null;
+  }
+
+  const media = await message.downloadMedia().catch(() => null);
+  if (!media || !media.data || !media.mimetype) {
+    return null;
+  }
+
+  const sizeBytes = mediaByteLength(media.data);
+  if (sizeBytes > maxForwardedMediaBytes) {
+    return {
+      skipped: true,
+      reason: "media_too_large",
+      mimetype: String(media.mimetype || "").trim(),
+      size_bytes: sizeBytes
+    };
+  }
+
+  return {
+    mimetype: String(media.mimetype || "").trim(),
+    data: String(media.data || ""),
+    filename: String(media.filename || message?._data?.filename || "").trim(),
+    caption: String(message.caption || message.body || "").trim(),
+    size_bytes: sizeBytes
+  };
 }
 
 function pruneRecentMessageMaps(state) {
@@ -409,6 +447,10 @@ function derivePhoneFromChatId(chatId) {
   return value.split("@", 1)[0].trim();
 }
 
+function sameChatId(left, right) {
+  return String(left || "").trim().toLowerCase() === String(right || "").trim().toLowerCase();
+}
+
 async function resolveContactProfile(state, chatId) {
   const normalizedChatId = String(chatId || "").trim();
   const profile = {
@@ -424,31 +466,78 @@ async function resolveContactProfile(state, chatId) {
     return profile;
   }
 
-  let contact = await state.client.getContactById(normalizedChatId).catch(() => null);
   let chatName = "";
-  if (!contact) {
-    const chat = await state.client.getChatById(normalizedChatId).catch(() => null);
-    chatName = String(chat?.name || "").trim();
-    contact = chat?.contact || null;
+  let contact = null;
+  const chat = await state.client.getChatById(normalizedChatId).catch(() => null);
+  if (chat) {
+    chatName = String(chat.name || "").trim();
+    contact = chat.contact || null;
   }
 
-  const contactId = String(contact?.id?._serialized || normalizedChatId).trim();
+  if (!contact) {
+    contact = await state.client.getContactById(normalizedChatId).catch(() => null);
+  }
+
+  const ownWid = String(state.client?.info?.wid?._serialized || state.wid || "").trim();
+  const contactId = String(contact?.id?._serialized || "").trim();
+  const contactBelongsToChat = Boolean(contactId && sameChatId(contactId, normalizedChatId));
+  const contactIsOwnAccount = Boolean(ownWid && contactId && sameChatId(contactId, ownWid));
+  if (contactIsOwnAccount && !sameChatId(normalizedChatId, ownWid)) {
+    contact = null;
+  }
+
+  if (!contactBelongsToChat && contactId && !contactIsOwnAccount) {
+    contact = null;
+  }
+
+  if (!contact && !chatName) {
+    const fallbackContact = await state.client.getContactById(normalizedChatId).catch(() => null);
+    const fallbackId = String(fallbackContact?.id?._serialized || "").trim();
+    if (fallbackId && sameChatId(fallbackId, normalizedChatId)) {
+      contact = fallbackContact;
+    }
+  }
+
   profile.display_name = String(
+    chatName ||
     contact?.pushname ||
     contact?.name ||
     contact?.shortName ||
-    chatName ||
     contact?.number ||
     ""
   ).trim();
   profile.phone = String(contact?.number || profile.phone || "").trim();
 
-  if (contactId) {
-    const avatarUrl = await state.client.getProfilePicUrl(contactId).catch(() => "");
+  if (state.client) {
+    const avatarUrl = await state.client.getProfilePicUrl(normalizedChatId).catch(() => "");
     profile.avatar_url = typeof avatarUrl === "string" ? avatarUrl : "";
   }
 
   return profile;
+}
+
+async function resolveChatContactProfile(state, chatId) {
+  const normalizedChatId = String(chatId || "").trim();
+  if (!isPersonalChatId(normalizedChatId)) {
+    return { displayName: "", avatarUrl: "" };
+  }
+
+  const profile = await resolveContactProfile(state, normalizedChatId).catch(() => null);
+  return {
+    displayName: String(profile?.display_name || "").trim(),
+    avatarUrl: String(profile?.avatar_url || "").trim()
+  };
+}
+
+async function resolveMessageSenderName(message) {
+  const contact = await message.getContact().catch(() => null);
+  return String(
+    contact?.pushname ||
+    contact?.name ||
+    contact?.shortName ||
+    message?._data?.notifyName ||
+    ""
+  ).trim();
 }
 
 async function sendTypingPulse(state, chatId) {
@@ -767,19 +856,12 @@ async function postIncomingMessageToPlatform(state, message, options = {}) {
   const botEligible = options.botEligible !== false;
   const botSkipReason = String(options.botSkipReason || "").trim();
   const runtimeReceivedAt = nowIso();
-  const contact = await message.getContact().catch(() => null);
-  const senderName = String(
-    contact?.pushname ||
-    contact?.name ||
-    contact?.shortName ||
-    message?._data?.notifyName ||
-    ""
-  ).trim();
-  const contactId = String(contact?.id?._serialized || chatId || "").trim();
-  let senderAvatarUrl = "";
-  if (contactId && state.client) {
-    senderAvatarUrl = await state.client.getProfilePicUrl(contactId).catch(() => "");
-  }
+  const chatContactProfile = await resolveChatContactProfile(state, chatId);
+  const media = await resolveIncomingMedia(message);
+  const senderName = Boolean(message.fromMe)
+    ? "WhatsApp account"
+    : (await resolveMessageSenderName(message) || chatContactProfile.displayName);
+  const senderAvatarUrl = Boolean(message.fromMe) ? "" : chatContactProfile.avatarUrl;
 
   const payload = {
     channel_key: state.channelId,
@@ -792,6 +874,8 @@ async function postIncomingMessageToPlatform(state, message, options = {}) {
       sender_avatar_url: typeof senderAvatarUrl === "string" ? senderAvatarUrl : "",
       text,
       message_type: String(message.type || "text").trim() || "text",
+      has_media: Boolean(media && !media.skipped),
+      media: media || null,
       timestamp: message.timestamp || null,
       timestamp_ms: Number(options.messageTimestampMs || 0),
       runtime_received_at: runtimeReceivedAt,
