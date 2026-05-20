@@ -384,6 +384,20 @@ class BotRegistryService:
             raise RuntimeError("Bot disconnection was saved but could not be reloaded.")
         return refreshed
 
+    def delete_bot(self, bot_id: str) -> BotRecord:
+        """Delete one custom bot and all of its channel/thread state."""
+        record = self.get_bot(bot_id)
+        if record is None:
+            raise ValueError("Bot not found.")
+        if record.is_default_template:
+            raise ValueError("Default bot template cannot be deleted.")
+
+        with self._connect() as connection:
+            connection.execute("DELETE FROM platform_bots WHERE id = ?", (bot_id,))
+            connection.commit()
+
+        return record
+
     def get_connected_bot_for_channel(self, channel_key: str) -> BotRecord | None:
         """Return the currently active runtime bot for one channel."""
         with self._connect() as connection:

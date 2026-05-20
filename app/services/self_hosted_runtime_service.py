@@ -126,6 +126,20 @@ class SelfHostedRuntimeService:
             timeout_seconds=10,
         )
 
+    def resolve_contact_profiles(self, channel_key: str, chat_ids: list[str]) -> dict[str, Any]:
+        """Fetch WhatsApp contact names and avatars for stored direct chats."""
+        cleaned_chat_ids = [str(chat_id).strip() for chat_id in chat_ids if str(chat_id).strip()]
+        if not cleaned_chat_ids:
+            return {"profiles": []}
+
+        self.ensure_runtime_started()
+        return self._request(
+            method="POST",
+            path=f"/api/v1/channels/{channel_key}/contacts/resolve",
+            json={"chat_ids": cleaned_chat_ids[:50]},
+            timeout_seconds=30,
+        )
+
     def _spawn_runtime_process(self) -> None:
         if not self._runtime_entrypoint.exists():
             raise SelfHostedRuntimeServiceError(

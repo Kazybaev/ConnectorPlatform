@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from fastapi import APIRouter, Header, HTTPException, status
 from fastapi.responses import HTMLResponse
@@ -13,17 +14,27 @@ from app.models.schemas import (
     RuntimeIncomingMessageRequest,
 )
 from app.services.platform_bot_runtime import PlatformBotRuntimeError, get_platform_bot_runtime_service
-from app.services.chat_store import ChatConversationRecord, ChatMessageRecord, get_chat_store_service
+from app.services.chat_store import (
+    ChatConversationRecord,
+    ChatMessageRecord,
+    get_chat_store_service,
+    is_personal_whatsapp_chat_id,
+)
+from app.services.chat_presence import get_chat_presence_service
 from app.services.self_hosted_runtime_service import SelfHostedRuntimeServiceError, get_self_hosted_runtime_service
 from app.utils.config import get_settings
 
 router = APIRouter(include_in_schema=False)
 api_router = APIRouter(tags=["chat-console"])
 logger = logging.getLogger(__name__)
+PROFILE_HYDRATION_TTL_SECONDS = 180.0
+PROFILE_HYDRATION_BATCH_SIZE = 30
+_profile_hydration_attempts: dict[tuple[str, str], float] = {}
 
 
 def serialize_conversation(record: ChatConversationRecord) -> PlatformConversationResponse:
     """Translate one stored conversation into the API response shape."""
+    presence = get_chat_presence_service().get_presence(record.channel_key, record.chat_id)
     return PlatformConversationResponse(
         channel_key=record.channel_key,
         chat_id=record.chat_id,
@@ -35,6 +46,9 @@ def serialize_conversation(record: ChatConversationRecord) -> PlatformConversati
         last_direction=record.last_direction if record.last_direction in {"inbound", "outbound"} else "inbound",
         last_sender_name=record.last_sender_name,
         unread_count=record.unread_count,
+        presence_status=presence.status if presence.status in {"offline", "online", "typing"} else "offline",
+        presence_label=presence.label,
+        presence_expires_at=presence.expires_at,
     )
 
 
@@ -76,6 +90,9 @@ def should_store_personal_runtime_message(payload: RuntimeIncomingMessageRequest
     if not chat_id:
         return False
 
+    if not is_personal_whatsapp_chat_id(chat_id):
+        return False
+
     if bool(message.get("self_chat", False)):
         return True
 
@@ -91,6 +108,85 @@ def should_store_personal_runtime_message(payload: RuntimeIncomingMessageRequest
     return True
 
 
+def is_placeholder_contact_name(display_name: str, chat_id: str) -> bool:
+    """Return True when the inbox can safely replace a weak stored name."""
+    cleaned = display_name.strip()
+    return not cleaned or cleaned == "." or cleaned == chat_id or cleaned == chat_id.split("@", 1)[0]
+
+
+def hydrate_conversation_profiles(channel_key: str, conversations: list[ChatConversationRecord]) -> None:
+    """Best-effort enrichment of old inbox rows with WhatsApp names and avatars."""
+    if not conversations:
+        return
+
+    now = time.monotonic()
+    chat_ids: list[str] = []
+    for conversation in conversations:
+        if conversation.avatar_url.strip():
+            continue
+
+        cache_key = (channel_key, conversation.chat_id)
+        last_attempt = _profile_hydration_attempts.get(cache_key, 0.0)
+        if now - last_attempt < PROFILE_HYDRATION_TTL_SECONDS:
+            continue
+
+        _profile_hydration_attempts[cache_key] = now
+        chat_ids.append(conversation.chat_id)
+        if len(chat_ids) >= PROFILE_HYDRATION_BATCH_SIZE:
+            break
+
+    if not chat_ids:
+        return
+
+    try:
+        payload = get_self_hosted_runtime_service().resolve_contact_profiles(channel_key, chat_ids)
+    except SelfHostedRuntimeServiceError as exc:
+        logger.debug("Could not hydrate WhatsApp contact profiles: %s", exc)
+        return
+
+    profiles = payload.get("profiles", [])
+    if not isinstance(profiles, list):
+        return
+
+    by_chat_id = {conversation.chat_id: conversation for conversation in conversations}
+    chat_store = get_chat_store_service()
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            continue
+
+        chat_id = str(profile.get("chat_id", "")).strip()
+        conversation = by_chat_id.get(chat_id)
+        if conversation is None:
+            continue
+
+        profile_name = str(profile.get("display_name", "")).strip()
+        profile_phone = str(profile.get("phone", "")).strip()
+        profile_avatar_url = str(profile.get("avatar_url", "")).strip()
+        next_display_name = conversation.display_name
+        if profile_name and is_placeholder_contact_name(conversation.display_name, conversation.chat_id):
+            next_display_name = profile_name
+
+        next_phone = profile_phone or conversation.phone
+        next_avatar_url = profile_avatar_url or conversation.avatar_url
+        if (
+            next_display_name == conversation.display_name
+            and next_phone == conversation.phone
+            and next_avatar_url == conversation.avatar_url
+        ):
+            continue
+
+        chat_store.update_conversation_profile(
+            channel_key=channel_key,
+            chat_id=conversation.chat_id,
+            display_name=next_display_name,
+            phone=next_phone,
+            avatar_url=next_avatar_url,
+        )
+        conversation.display_name = next_display_name
+        conversation.phone = next_phone
+        conversation.avatar_url = next_avatar_url
+
+
 @router.get("/chats", response_class=HTMLResponse)
 def chat_console_page() -> str:
     """Render the platform inbox UI for monitoring and replying to chats."""
@@ -104,89 +200,93 @@ def chat_console_page() -> str:
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/brand.css?v=community-20260515d" />
+  <link rel="stylesheet" href="/static/brand.css?v=ai-connector-20260519d" />
 </head>
 <body>
-  <div class="page-shell inbox-shell">
-    <div class="ambient ambient-left"></div>
-    <div class="ambient ambient-right"></div>
-    <header class="topbar connect-topbar">
-      <a class="brand-home" href="/" aria-label="COMMUNITY">
-        <img class="brand-logo-image" src="/static/community-mark-clean.svg?v=community-20260515d" alt="COMMUNITY mark" />
+  <div class="inbox-app-shell">
+    <header class="inbox-app-topbar">
+      <a class="brand-home" href="/" aria-label="AI Connector">
+        <img class="brand-logo-image" src="/static/community-mark-clean.svg?v=ai-connector-20260519c" alt="AI Connector mark" />
       </a>
       <nav class="nav-links">
         <a href="/">Платформа</a>
+        <a class="is-active" href="/chats">Чаты</a>
         <a href="/bots">Боты</a>
-        <a href="/connect/whatsapp">Подключить WhatsApp</a>
+        <a href="/connect/whatsapp">WhatsApp</a>
       </nav>
     </header>
 
-    <main class="onboarding-main inbox-main">
-      <section class="onboarding-intro reveal is-visible">
-        <span class="eyebrow">Chat monitoring</span>
-        <h1>Чаты платформы и ручные ответы</h1>
-        <p class="hero-text">
-          Здесь можно видеть входящие сообщения, следить за новыми диалогами и отвечать клиентам прямо из платформы,
-          даже если поверх этой же линии работает отдельный бот или интеграция.
-        </p>
-      </section>
+    <main class="inbox-workspace">
+      <aside class="inbox-sidebar">
+        <div class="inbox-sidebar-head">
+          <div>
+            <div class="inbox-title-row">
+              <h1>Conversations</h1>
+              <span class="inbox-count-pill" id="conversation-count-pill">0</span>
+            </div>
+            <p>Личные WhatsApp-чаты</p>
+          </div>
+          <button class="inbox-icon-button" id="conversation-refresh-btn" type="button" title="Обновить">↻</button>
+        </div>
 
-      <section class="inbox-grid">
-        <aside class="wizard-card inbox-sidebar reveal is-visible">
-          <div class="inbox-sidebar-head">
+        <div class="inbox-filter-row" aria-label="Фильтры чатов">
+          <button class="inbox-filter-tab is-active" type="button">Mine</button>
+          <button class="inbox-filter-tab" type="button">All</button>
+          <span class="inbox-filter-spacer"></span>
+          <span class="inbox-filter-note">Groups hidden</span>
+        </div>
+
+        <div class="inbox-conversation-list" id="conversation-list">
+          <div class="empty-state-card">Пока нет личных сообщений. Как только в WhatsApp придет новый личный чат, он появится здесь.</div>
+        </div>
+      </aside>
+
+      <section class="inbox-chat-panel">
+        <header class="inbox-chat-head">
+          <div class="inbox-active-contact">
+            <div class="inbox-avatar inbox-avatar-large" id="active-chat-avatar"><span>?</span></div>
             <div>
-              <div class="card-label card-label-no-margin">Диалоги</div>
-              <h2 class="simple-connection-name inbox-title">Список чатов</h2>
+              <h2 class="inbox-chat-name" id="active-chat-name">Выберите диалог</h2>
+              <p id="active-chat-meta">Откройте чат слева, чтобы видеть историю сообщений и отвечать вручную.</p>
             </div>
-            <button class="button button-secondary inbox-refresh-button" id="conversation-refresh-btn" type="button">
-              Обновить
-            </button>
           </div>
-
-          <div class="inbox-conversation-list" id="conversation-list">
-            <div class="empty-state-card">Пока нет сообщений. Как только в WhatsApp придет новый чат, он появится здесь.</div>
+          <div class="inbox-chat-badges">
+            <span class="pill" id="chat-channel-pill">platform-main</span>
+            <span class="pill" id="chat-status-pill">Нет активного чата</span>
           </div>
-        </aside>
+        </header>
 
-        <section class="wizard-card inbox-chat-panel reveal is-visible">
-          <div class="inbox-chat-head">
+        <div class="inbox-chat-tabs">
+          <button class="inbox-chat-tab is-active" type="button">Messages</button>
+          <button class="inbox-chat-tab" type="button">Customer Dashboard</button>
+        </div>
+
+        <div class="inbox-message-stream" id="message-stream">
+          <div class="empty-state-card">
+            История чата появится здесь после выбора диалога.
+          </div>
+        </div>
+
+        <div class="inbox-composer">
+          <div class="inbox-composer-tabs">
+            <button class="inbox-composer-tab is-active" type="button">Reply</button>
+            <button class="inbox-composer-tab" type="button">Private Note</button>
+          </div>
+          <textarea id="manual-reply-input" rows="4" placeholder="Введите сообщение для клиента..."></textarea>
+          <div class="inbox-composer-actions">
+            <span>Ctrl + Enter для отправки</span>
             <div>
-              <div class="card-label card-label-no-margin">Открытый чат</div>
-              <h2 class="simple-connection-name inbox-chat-name" id="active-chat-name">Выберите диалог</h2>
-              <p class="section-copy section-copy-tight" id="active-chat-meta">
-                Откройте чат слева, чтобы видеть историю сообщений и отвечать вручную.
-              </p>
-            </div>
-            <div class="inbox-chat-badges">
-              <span class="pill" id="chat-channel-pill">platform-main</span>
-              <span class="pill" id="chat-status-pill">Нет активного чата</span>
+              <button class="button button-secondary" id="message-refresh-btn" type="button">Обновить</button>
+              <button class="button button-primary" id="send-reply-btn" type="button">Отправить</button>
             </div>
           </div>
+        </div>
 
-          <div class="inbox-message-stream" id="message-stream">
-            <div class="empty-state-card">
-              История чата появится здесь после выбора диалога.
-            </div>
-          </div>
-
-          <div class="inbox-composer">
-            <label class="inbox-composer-label" for="manual-reply-input">Ответить из платформы</label>
-            <textarea id="manual-reply-input" rows="4" placeholder="Введите сообщение для клиента..."></textarea>
-            <div class="inbox-composer-actions">
-              <button class="button button-secondary" id="message-refresh-btn" type="button">Обновить чат</button>
-              <button class="button button-primary" id="send-reply-btn" type="button">Отправить сообщение</button>
-            </div>
-          </div>
-
-          <div class="result-console-shell inbox-console-shell">
-            <div class="status-kicker">Лог консоли</div>
-            <pre class="result-console" id="chat-console">Чат-монитор готов.</pre>
-          </div>
-        </section>
+        <pre class="inbox-console" id="chat-console">Чат-монитор готов.</pre>
       </section>
     </main>
   </div>
-  <script src="/static/chat-monitor.js?v=chat-20260514a"></script>
+  <script src="/static/chat-monitor.js?v=chat-20260519c"></script>
 </body>
 </html>"""
 
@@ -242,6 +342,7 @@ def list_platform_conversations(channel_key: str | None = None) -> list[Platform
     """Return the latest chat conversations for the platform inbox."""
     resolved_channel = channel_key or get_settings().runtime_platform_channel_key
     conversations = get_chat_store_service().list_conversations(resolved_channel)
+    hydrate_conversation_profiles(resolved_channel, conversations)
     return [serialize_conversation(conversation) for conversation in conversations]
 
 

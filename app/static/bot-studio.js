@@ -26,6 +26,7 @@ const elements = {
   disconnectTestBotBtn: document.getElementById("disconnect-test-bot-btn"),
   activateBotBtn: document.getElementById("activate-bot-btn"),
   deactivateBotBtn: document.getElementById("deactivate-bot-btn"),
+  deleteBotBtn: document.getElementById("delete-bot-btn"),
 };
 
 function escapeHtml(value) {
@@ -182,6 +183,7 @@ function updateConnectionButtons(bot) {
   const hasBot = Boolean(bot && bot.id);
   const enabled = Boolean(bot?.enabled);
   const connected = Boolean(bot?.test_connected);
+  const defaultTemplate = Boolean(bot?.is_default_template);
 
   if (elements.connectTestBotBtn) {
     elements.connectTestBotBtn.disabled = !hasBot || connected;
@@ -209,6 +211,11 @@ function updateConnectionButtons(bot) {
   if (elements.deactivateBotBtn) {
     elements.deactivateBotBtn.disabled = !hasBot || !enabled;
     elements.deactivateBotBtn.textContent = "Деактивировать бота";
+  }
+
+  if (elements.deleteBotBtn) {
+    elements.deleteBotBtn.disabled = !hasBot || defaultTemplate;
+    elements.deleteBotBtn.textContent = defaultTemplate ? "Default нельзя удалить" : "Удалить бота";
   }
 }
 
@@ -456,6 +463,39 @@ async function deactivateBot() {
   }
 }
 
+async function deleteBot() {
+  if (!state.activeBot?.id || !elements.deleteBotBtn || state.activeBot.is_default_template) {
+    return;
+  }
+
+  const confirmed = window.confirm(
+    `Удалить бота "${state.activeBot.name || state.activeBot.slug}"? Его связи с WhatsApp и conversation_id будут очищены.`,
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  const deletedBotId = state.activeBot.id;
+  elements.deleteBotBtn.disabled = true;
+  elements.deleteBotBtn.textContent = "Удаляем...";
+  try {
+    await requestJson(`/api/v1/platform/bots/${encodeURIComponent(deletedBotId)}`, {
+      method: "DELETE",
+    });
+    state.activeBotId = null;
+    state.activeBot = null;
+    await loadBotList({ preserveSelection: false });
+    elements.descriptionCard.textContent = "Бот удалён из реестра.";
+  } catch (error) {
+    elements.descriptionCard.textContent = `Не удалось удалить бота: ${error.message}`;
+    updateConnectionButtons(state.activeBot);
+  } finally {
+    if (elements.deleteBotBtn) {
+      elements.deleteBotBtn.textContent = "Удалить бота";
+    }
+  }
+}
+
 async function handleCreateBot(event) {
   event.preventDefault();
 
@@ -540,6 +580,9 @@ function wireEvents() {
   });
   elements.deactivateBotBtn?.addEventListener("click", () => {
     deactivateBot();
+  });
+  elements.deleteBotBtn?.addEventListener("click", () => {
+    deleteBot();
   });
   elements.createForm?.addEventListener("submit", handleCreateBot);
 }

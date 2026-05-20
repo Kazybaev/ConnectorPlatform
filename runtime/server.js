@@ -55,7 +55,16 @@ const connectStallMs = Number.isFinite(configuredConnectStallMs)
   : 90000;
 const platformCallbackRetryMs = 5000;
 const platformCallbackQueueMaxSize = 500;
-const typingRefreshMs = 10000;
+const configuredTypingRefreshMs = Number(process.env.RUNTIME_TYPING_REFRESH_MS || "3500");
+const typingRefreshMs = Number.isFinite(configuredTypingRefreshMs)
+  ? Math.max(1500, configuredTypingRefreshMs)
+  : 3500;
+const onlinePresenceEnabled = String(process.env.RUNTIME_ONLINE_PRESENCE_ENABLED || "true").trim().toLowerCase()
+  !== "false";
+const configuredPresenceRefreshMs = Number(process.env.RUNTIME_ONLINE_PRESENCE_REFRESH_MS || "15000");
+const presenceRefreshMs = Number.isFinite(configuredPresenceRefreshMs)
+  ? Math.max(5000, configuredPresenceRefreshMs)
+  : 15000;
 
 fs.mkdirSync(sessionRoot, { recursive: true });
 
@@ -126,6 +135,8 @@ function buildInitialState(channelKey, displayName) {
     recentPlatformOutboundMessageIds: new Map(),
     pendingPlatformCallbacks: [],
     activeTypingSessions: new Map(),
+    presenceKeepaliveTimer: null,
+    lastPresenceAvailableAt: "",
     reconnectTimer: null,
     reconnectAttempts: 0,
     isResetting: false,
@@ -169,6 +180,8 @@ function serializeState(state) {
     last_connection_at: state.lastConnectionAt,
     last_message_at: state.lastMessageAt,
     bot_activated_at: state.botActivatedAt,
+    last_presence_available_at: state.lastPresenceAvailableAt,
+    active_typing_chats: [...state.activeTypingSessions.keys()],
     last_error: state.lastError
   };
 }
@@ -325,11 +338,125 @@ function typingSessionKey(chatId) {
   return String(chatId || "").trim();
 }
 
+function clearPresenceKeepaliveTimer(state) {
+  if (!state.presenceKeepaliveTimer) {
+    return;
+  }
+
+  clearInterval(state.presenceKeepaliveTimer);
+  state.presenceKeepaliveTimer = null;
+}
+
+async function sendOnlinePresence(state) {
+  if (!onlinePresenceEnabled || !state.client || state.connectionStatus !== "connected") {
+    return;
+  }
+
+  if (typeof state.client.sendPresenceAvailable !== "function") {
+    return;
+  }
+
+  await state.client.sendPresenceAvailable();
+  state.lastPresenceAvailableAt = nowIso();
+}
+
+function startPresenceKeepalive(state) {
+  if (!onlinePresenceEnabled || state.presenceKeepaliveTimer) {
+    return;
+  }
+
+  state.presenceKeepaliveTimer = setInterval(() => {
+    sendOnlinePresence(state).catch((error) => {
+      state.lastError = `Online presence failed: ${sanitizeError(error)}`;
+      console.error(`[runtime:${state.channelId}] online presence failed`, state.lastError);
+    });
+  }, presenceRefreshMs);
+
+  if (typeof state.presenceKeepaliveTimer.unref === "function") {
+    state.presenceKeepaliveTimer.unref();
+  }
+}
+
+async function ensureOnlinePresence(state) {
+  if (!onlinePresenceEnabled) {
+    return;
+  }
+
+  startPresenceKeepalive(state);
+  try {
+    await sendOnlinePresence(state);
+  } catch (error) {
+    state.lastError = `Online presence failed: ${sanitizeError(error)}`;
+    console.error(`[runtime:${state.channelId}] online presence failed`, state.lastError);
+  }
+}
+
+function isPersonalChatId(chatId) {
+  const normalized = String(chatId || "").trim().toLowerCase();
+  const [localPart, domain] = normalized.split("@", 2);
+  return Boolean(
+    normalized &&
+    /^\d+$/.test(localPart || "") &&
+    ["c.us", "lid", "s.whatsapp.net"].includes(domain || "")
+  );
+}
+
+function derivePhoneFromChatId(chatId) {
+  const value = String(chatId || "").trim();
+  if (!value.includes("@")) {
+    return value;
+  }
+  return value.split("@", 1)[0].trim();
+}
+
+async function resolveContactProfile(state, chatId) {
+  const normalizedChatId = String(chatId || "").trim();
+  const profile = {
+    chat_id: normalizedChatId,
+    display_name: "",
+    phone: derivePhoneFromChatId(normalizedChatId),
+    avatar_url: "",
+    skipped: false
+  };
+
+  if (!isPersonalChatId(normalizedChatId)) {
+    profile.skipped = true;
+    return profile;
+  }
+
+  let contact = await state.client.getContactById(normalizedChatId).catch(() => null);
+  let chatName = "";
+  if (!contact) {
+    const chat = await state.client.getChatById(normalizedChatId).catch(() => null);
+    chatName = String(chat?.name || "").trim();
+    contact = chat?.contact || null;
+  }
+
+  const contactId = String(contact?.id?._serialized || normalizedChatId).trim();
+  profile.display_name = String(
+    contact?.pushname ||
+    contact?.name ||
+    contact?.shortName ||
+    chatName ||
+    contact?.number ||
+    ""
+  ).trim();
+  profile.phone = String(contact?.number || profile.phone || "").trim();
+
+  if (contactId) {
+    const avatarUrl = await state.client.getProfilePicUrl(contactId).catch(() => "");
+    profile.avatar_url = typeof avatarUrl === "string" ? avatarUrl : "";
+  }
+
+  return profile;
+}
+
 async function sendTypingPulse(state, chatId) {
   if (!state.client || state.connectionStatus !== "connected") {
     throw new Error(`Runtime channel is not connected (${state.connectionStatus}).`);
   }
 
+  await ensureOnlinePresence(state);
   const chat = await state.client.getChatById(chatId);
   await chat.sendStateTyping();
 }
@@ -365,7 +492,8 @@ async function startTypingState(state, chatId) {
         });
     }, typingRefreshMs),
     startedAt: nowIso(),
-    lastPulseAt: nowIso()
+    lastPulseAt: nowIso(),
+    mode: "typing"
   };
 
   if (typeof session.timer.unref === "function") {
@@ -394,6 +522,7 @@ async function stopTypingState(state, chatId, options = {}) {
   try {
     const chat = await state.client.getChatById(key);
     await chat.clearState();
+    await sendOnlinePresence(state);
   } catch (error) {
     state.lastError = `Typing clear failed: ${sanitizeError(error)}`;
   }
@@ -646,6 +775,11 @@ async function postIncomingMessageToPlatform(state, message, options = {}) {
     message?._data?.notifyName ||
     ""
   ).trim();
+  const contactId = String(contact?.id?._serialized || chatId || "").trim();
+  let senderAvatarUrl = "";
+  if (contactId && state.client) {
+    senderAvatarUrl = await state.client.getProfilePicUrl(contactId).catch(() => "");
+  }
 
   const payload = {
     channel_key: state.channelId,
@@ -655,6 +789,7 @@ async function postIncomingMessageToPlatform(state, message, options = {}) {
       chat_id: chatId,
       sender_id: String(message.author || message.from || message.to || "").trim(),
       sender_name: senderName,
+      sender_avatar_url: typeof senderAvatarUrl === "string" ? senderAvatarUrl : "",
       text,
       message_type: String(message.type || "text").trim() || "text",
       timestamp: message.timestamp || null,
@@ -783,6 +918,7 @@ async function attachClientEventHandlers(state, client) {
     state.lastConnectionAt = state.botActivatedAt;
     state.lastError = "";
     await refreshProfile(state);
+    await ensureOnlinePresence(state);
   });
 
   client.on("message", async (message) => {
@@ -795,6 +931,7 @@ async function attachClientEventHandlers(state, client) {
 
   client.on("auth_failure", (message) => {
     setConnectionStatus(state, "disconnected");
+    clearPresenceKeepaliveTimer(state);
     stopAllTypingStates(state, { clearRemoteState: false }).catch(() => {});
     state.qrAvailable = false;
     state.qrCodeDataUrl = "";
@@ -808,6 +945,7 @@ async function attachClientEventHandlers(state, client) {
 
   client.on("disconnected", (reason) => {
     setConnectionStatus(state, "disconnected");
+    clearPresenceKeepaliveTimer(state);
     stopAllTypingStates(state, { clearRemoteState: false }).catch(() => {});
     state.qrAvailable = false;
     state.qrCodeDataUrl = "";
@@ -935,6 +1073,7 @@ async function bootstrapDefaultChannel() {
 
 async function destroyClient(state, wipeSession) {
   clearReconnectTimer(state);
+  clearPresenceKeepaliveTimer(state);
   await stopAllTypingStates(state, { clearRemoteState: true });
   if (state.client) {
     try {
@@ -1092,6 +1231,44 @@ app.post("/api/v1/channels/:channelKey/typing", requireRuntimeToken, async (req,
       await stopTypingState(state, chatId);
     }
     res.json({ ok: true, channel_id: channelKey, chat_id: chatId, typing: active });
+  } catch (error) {
+    state.lastError = sanitizeError(error);
+    res.status(502).json({ detail: state.lastError });
+  }
+});
+
+app.post("/api/v1/channels/:channelKey/contacts/resolve", requireRuntimeToken, async (req, res) => {
+  const channelKey = String(req.params.channelKey || "").trim();
+  const state = channelStates.get(channelKey);
+  if (!state) {
+    res.status(404).json({ detail: "Runtime channel not found." });
+    return;
+  }
+
+  const rawChatIds = Array.isArray(req.body?.chat_ids) ? req.body.chat_ids : [];
+  const chatIds = [...new Set(
+    rawChatIds
+      .map((value) => String(value || "").trim())
+      .filter((value) => value && isPersonalChatId(value))
+  )].slice(0, 50);
+
+  if (!chatIds.length) {
+    res.json({ profiles: [] });
+    return;
+  }
+
+  try {
+    await ensureClient(state);
+    if (state.connectionStatus !== "connected") {
+      res.status(409).json({ detail: `Runtime channel is not connected (${state.connectionStatus}).` });
+      return;
+    }
+
+    const profiles = [];
+    for (const chatId of chatIds) {
+      profiles.push(await resolveContactProfile(state, chatId));
+    }
+    res.json({ profiles });
   } catch (error) {
     state.lastError = sanitizeError(error);
     res.status(502).json({ detail: state.lastError });

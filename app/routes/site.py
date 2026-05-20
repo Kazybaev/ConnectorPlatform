@@ -19,20 +19,19 @@ def landing_page() -> str:
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/brand.css?v=ai-connector-20260518a" />
+  <link rel="stylesheet" href="/static/brand.css?v=ai-connector-20260519c" />
 </head>
 <body>
   <div class="page-shell">
     <header class="topbar">
       <a class="brand-home" href="/" aria-label="AI Connector">
-        <img class="brand-logo-image" src="/static/community-mark-clean.svg?v=ai-connector-20260518a" alt="AI Connector mark" />
+        <img class="brand-logo-image" src="/static/community-mark-clean.svg?v=ai-connector-20260519c" alt="AI Connector mark" />
       </a>
       <nav class="nav-links">
-        <a href="/">Платформа</a>
-        <a href="/connect/whatsapp">WhatsApp</a>
+        <a class="is-active" href="/">Платформа</a>
         <a href="/chats">Чаты</a>
         <a href="/bots">Боты</a>
-        <a href="/docs">API Docs</a>
+        <a href="/connect/whatsapp">WhatsApp</a>
       </nav>
     </header>
 

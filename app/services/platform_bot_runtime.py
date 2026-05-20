@@ -10,6 +10,7 @@ from typing import Any
 import requests
 
 from app.services.bot_registry import BotRecord, get_bot_registry_service
+from app.services.chat_presence import get_chat_presence_service
 from app.services.chat_store import get_chat_store_service
 from app.services.self_hosted_runtime_service import SelfHostedRuntimeServiceError, get_self_hosted_runtime_service
 from app.utils.config import Settings, get_settings
@@ -151,6 +152,8 @@ class PlatformBotRuntimeService:
 
         runtime_service = get_self_hosted_runtime_service()
         typing_started = self._start_typing(runtime_service, channel_key, chat_id)
+        if typing_started:
+            get_chat_presence_service().mark_typing(channel_key, chat_id)
         try:
             try:
                 answer_payload = self._dispatch_connected_bot_message(bot, channel_key, payload)
@@ -219,6 +222,7 @@ class PlatformBotRuntimeService:
         finally:
             if typing_started:
                 self._stop_typing(runtime_service, channel_key, chat_id)
+                get_chat_presence_service().mark_online(channel_key, chat_id)
 
     def _start_typing(self, runtime_service: Any, channel_key: str, chat_id: str) -> bool:
         if not self._settings.bot_typing_enabled:

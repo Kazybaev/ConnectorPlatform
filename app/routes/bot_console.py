@@ -183,20 +183,21 @@ def bot_console_page() -> str:
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/brand.css?v=community-20260515e" />
+  <link rel="stylesheet" href="/static/brand.css?v=ai-connector-20260519c" />
 </head>
 <body>
   <div class="page-shell onboarding-shell">
     <div class="ambient ambient-left"></div>
     <div class="ambient ambient-right"></div>
     <header class="topbar connect-topbar">
-      <a class="brand-home" href="/" aria-label="COMMUNITY">
-        <img class="brand-logo-image" src="/static/community-mark-clean.svg?v=community-20260515d" alt="COMMUNITY mark" />
+      <a class="brand-home" href="/" aria-label="AI Connector">
+        <img class="brand-logo-image" src="/static/community-mark-clean.svg?v=ai-connector-20260519c" alt="AI Connector mark" />
       </a>
       <nav class="nav-links">
         <a href="/">Платформа</a>
         <a href="/chats">Чаты</a>
-        <a href="/connect/whatsapp">Connect WA</a>
+        <a class="is-active" href="/bots">Боты</a>
+        <a href="/connect/whatsapp">WhatsApp</a>
       </nav>
     </header>
 
@@ -268,6 +269,7 @@ def bot_console_page() -> str:
             <button class="button button-secondary" id="disconnect-test-bot-btn" type="button" disabled>Отключить от WhatsApp</button>
             <button class="button button-secondary" id="activate-bot-btn" type="button" disabled>Активировать бота</button>
             <button class="button button-secondary" id="deactivate-bot-btn" type="button" disabled>Деактивировать бота</button>
+            <button class="button button-secondary" id="delete-bot-btn" type="button" disabled>Удалить бота</button>
           </div>
 
           <div class="bot-description-card" id="bot-description-card">
@@ -431,7 +433,7 @@ def bot_console_page() -> str:
       </section>
     </main>
   </div>
-  <script src="/static/bot-studio.js?v=bots-20260518d"></script>
+  <script src="/static/bot-studio.js?v=bots-20260519a"></script>
 </body>
 </html>"""
 
@@ -537,6 +539,23 @@ def disconnect_platform_bot(bot_id: str) -> BotTestConnectionResponse:
         bot_ready=False,
         diagnostics={},
     )
+
+
+@api_router.delete("/api/v1/platform/bots/{bot_id}", status_code=status.HTTP_200_OK)
+def delete_platform_bot(bot_id: str) -> dict[str, object]:
+    """Delete one custom bot integration from the platform catalog."""
+    try:
+        record = get_bot_registry_service().delete_bot(bot_id)
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = status.HTTP_403_FORBIDDEN if "Default bot" in detail else status.HTTP_404_NOT_FOUND
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+    return {
+        "ok": True,
+        "bot_id": record.id,
+        "slug": record.slug,
+        "deleted": True,
+    }
 
 
 @api_router.post("/api/v1/platform/bots/{bot_id}/activate", status_code=status.HTTP_200_OK)

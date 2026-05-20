@@ -43,6 +43,19 @@ def derive_phone_from_chat_id(chat_id: str) -> str:
     return chat_id.split("@", 1)[0].strip()
 
 
+def is_personal_whatsapp_chat_id(chat_id: str) -> bool:
+    """Return True for direct WhatsApp chats and False for groups/test/system ids."""
+    normalized = chat_id.strip().lower()
+    if not normalized or "@" not in normalized:
+        return False
+
+    local_part, domain = normalized.split("@", 1)
+    if domain not in {"c.us", "lid", "s.whatsapp.net"}:
+        return False
+
+    return local_part.isdigit()
+
+
 @dataclass(slots=True)
 class ChatConversationRecord:
     """One conversation row shown in the operator inbox."""
@@ -109,6 +122,10 @@ class ChatStoreService:
                     updated_at
                 FROM chat_conversations
                 WHERE channel_key = ?
+                    AND LOWER(chat_id) NOT LIKE '%@g.us'
+                    AND LOWER(chat_id) NOT LIKE '%@broadcast'
+                    AND LOWER(chat_id) NOT LIKE '%@newsletter'
+                    AND LOWER(chat_id) != 'status@broadcast'
                 ORDER BY last_message_at DESC, updated_at DESC
                 LIMIT ?
                 """,
@@ -131,6 +148,7 @@ class ChatStoreService:
                 updated_at=row["updated_at"],
             )
             for row in rows
+            if is_personal_whatsapp_chat_id(row["chat_id"] or "")
         ]
 
     def list_messages(self, channel_key: str, chat_id: str, limit: int = 200) -> list[ChatMessageRecord]:
@@ -196,6 +214,7 @@ class ChatStoreService:
         sender_id = str(message.get("sender_id", "")).strip() or chat_id
         text = str(message.get("text", "")).strip()
         message_type = str(message.get("message_type", "text")).strip() or "text"
+        avatar_url = str(message.get("sender_avatar_url", "") or message.get("avatar_url", "")).strip()
         from_me = bool(message.get("from_me", False))
         self_chat = bool(message.get("self_chat", False))
         direction = "outbound" if from_me and not self_chat else "inbound"
@@ -275,7 +294,7 @@ class ChatStoreService:
                 chat_id=chat_id,
                 display_name=sender_name or derive_phone_from_chat_id(chat_id) or chat_id,
                 phone=derive_phone_from_chat_id(chat_id),
-                avatar_url="",
+                avatar_url=avatar_url,
                 last_message_text=text,
                 last_message_at=created_at,
                 last_direction=direction,
@@ -448,6 +467,55 @@ class ChatStoreService:
         if row is None:
             raise RuntimeError("Outgoing chat message was stored but could not be read back.")
         return self._row_to_message(row)
+
+    def update_conversation_profile(
+        self,
+        *,
+        channel_key: str,
+        chat_id: str,
+        display_name: str = "",
+        phone: str = "",
+        avatar_url: str = "",
+    ) -> None:
+        """Update stored contact metadata without changing the message summary."""
+        display_name = display_name.strip()
+        phone = phone.strip()
+        avatar_url = avatar_url.strip()
+        if not any([display_name, phone, avatar_url]):
+            return
+
+        with self._connect() as connection:
+            existing = connection.execute(
+                """
+                SELECT display_name, phone, avatar_url
+                FROM chat_conversations
+                WHERE channel_key = ? AND chat_id = ?
+                """,
+                (channel_key, chat_id),
+            ).fetchone()
+            if existing is None:
+                return
+
+            connection.execute(
+                """
+                UPDATE chat_conversations
+                SET
+                    display_name = ?,
+                    phone = ?,
+                    avatar_url = ?,
+                    updated_at = ?
+                WHERE channel_key = ? AND chat_id = ?
+                """,
+                (
+                    display_name or str(existing["display_name"] or "").strip(),
+                    phone or str(existing["phone"] or "").strip(),
+                    avatar_url or str(existing["avatar_url"] or "").strip(),
+                    utc_now_iso(),
+                    channel_key,
+                    chat_id,
+                ),
+            )
+            connection.commit()
 
     def mark_conversation_read(self, channel_key: str, chat_id: str) -> None:
         """Reset unread counters after the operator opens one chat."""
