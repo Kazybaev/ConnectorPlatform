@@ -109,16 +109,17 @@ class PlatformBotRuntimeService:
     def process_runtime_incoming_message(self, channel_key: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Send one inbound WhatsApp message through the active platform bot when configured."""
         message = payload.get("message", {}) if isinstance(payload.get("message"), dict) else {}
-        if message.get("bot_eligible") is False:
-            return {
-                "handled": False,
-                "reason": str(message.get("bot_skip_reason") or "not_bot_eligible"),
-            }
-
         is_self_chat = bool(message.get("self_chat", False))
         allow_bot_reply = bool(message.get("allow_bot_reply", False))
         if bool(message.get("from_me", False)) and not (is_self_chat and allow_bot_reply):
             return {"handled": False, "reason": "from_me"}
+
+        bot_skip_reason = str(message.get("bot_skip_reason") or "").strip()
+        if message.get("bot_eligible") is False:
+            return {
+                "handled": False,
+                "reason": bot_skip_reason or "not_bot_eligible",
+            }
 
         chat_id = str(message.get("chat_id", "")).strip()
         text = str(message.get("text", "")).strip()
@@ -127,10 +128,6 @@ class PlatformBotRuntimeService:
         if not chat_id or (not text and not has_media):
             return {"handled": False, "reason": "empty_message"}
 
-        message_type = str(message.get("message_type", "text")).strip().lower() or "text"
-        if message_type not in {"text", "chat"} and not has_media:
-            return {"handled": False, "reason": f"unsupported_message_type:{message_type}"}
-
         bot = get_bot_registry_service().get_connected_bot_for_channel(channel_key)
         if bot is None:
             return {"handled": False, "reason": "no_connected_bot"}
@@ -138,25 +135,12 @@ class PlatformBotRuntimeService:
         if not bot.enabled:
             return {"handled": False, "reason": "bot_disabled", "bot_id": bot.id}
 
-        bot_activated_at = get_bot_registry_service().get_connection_activated_at(bot.id, channel_key)
-        activation_cutoff_ms = max(
-            epoch_ms(message.get("runtime_activated_at")),
-            epoch_ms(bot_activated_at),
-        )
-        sent_at_ms = message_sent_epoch_ms(message)
-        if activation_cutoff_ms and sent_at_ms and sent_at_ms < activation_cutoff_ms:
-            return {
-                "handled": False,
-                "reason": "before_bot_activation",
-                "bot_id": bot.id,
-                "bot_activated_at": bot_activated_at,
-            }
-
         runtime_service = get_self_hosted_runtime_service()
         typing_started = self._start_typing(runtime_service, channel_key, chat_id)
         if typing_started:
             get_chat_presence_service().mark_typing(channel_key, chat_id)
         try:
+            used_fallback_reply = False
             try:
                 answer_payload = self._dispatch_connected_bot_message(bot, channel_key, payload)
             except PlatformBotRuntimeError as exc:
@@ -176,11 +160,22 @@ class PlatformBotRuntimeService:
                 answer_payload = {
                     "answer": self._settings.bot_failure_reply_text,
                     "fallback_reply": True,
+                    "admin_handoff": True,
                     "error": str(exc),
                 }
             answer_text = self._extract_bot_answer(answer_payload).strip()
             if not answer_text:
-                return {"handled": False, "reason": "empty_answer", "bot_id": bot.id}
+                if not self._settings.bot_failure_reply_enabled:
+                    return {"handled": False, "reason": "empty_answer", "bot_id": bot.id}
+                answer_payload = {
+                    "answer": self._settings.bot_failure_reply_text,
+                    "fallback_reply": True,
+                    "admin_handoff": True,
+                    "error": "empty_answer",
+                }
+                answer_text = self._settings.bot_failure_reply_text
+
+            used_fallback_reply = bool(answer_payload.get("fallback_reply") or answer_payload.get("admin_handoff"))
 
             logger.info(
                 "Platform bot handling WhatsApp message",
@@ -195,6 +190,7 @@ class PlatformBotRuntimeService:
 
             self._wait_like_human_typing(answer_text)
             chat_store = get_chat_store_service()
+            chat_store.mark_admin_handoff(channel_key, chat_id, used_fallback_reply)
             sent_message_ids: list[str] = []
             for chunk in split_text_chunks(answer_text):
                 try:
@@ -209,7 +205,7 @@ class PlatformBotRuntimeService:
                     chat_id=chat_id,
                     text=chunk,
                     external_message_id=external_message_id,
-                    source=f"bot:{bot.slug}",
+                    source="system:admin_handoff" if used_fallback_reply else f"bot:{bot.slug}",
                     sender_name=bot.name,
                     status="sent",
                     raw_payload=answer_payload,

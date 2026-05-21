@@ -44,14 +44,18 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
             settings.simple_connect_name,
         )
         logger.info("Runtime channel %s is ready", settings.runtime_platform_channel_key)
+    except SelfHostedRuntimeServiceError as exc:
+        logger.warning("Runtime channel bootstrap failed: %s", exc)
+
+    try:
         connected_bot = bot_registry.ensure_default_bot_connected()
         logger.info(
             "Bot channel binding is ready: channel=%s bot=%s",
             settings.runtime_platform_channel_key,
             connected_bot.slug,
         )
-    except SelfHostedRuntimeServiceError as exc:
-        logger.warning("Runtime channel bootstrap failed: %s", exc)
+    except Exception as exc:
+        logger.warning("Bot channel binding failed: %s", exc)
     yield
     logger.info("Stopping %s", settings.app_name)
 

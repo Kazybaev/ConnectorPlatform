@@ -13,7 +13,12 @@ from app.models.schemas import (
     PlatformConversationResponse,
     RuntimeIncomingMessageRequest,
 )
-from app.services.platform_bot_runtime import PlatformBotRuntimeError, get_platform_bot_runtime_service
+from app.services.platform_bot_runtime import (
+    PlatformBotRuntimeError,
+    epoch_ms,
+    get_platform_bot_runtime_service,
+    message_sent_epoch_ms,
+)
 from app.services.chat_store import (
     ChatConversationRecord,
     ChatMessageRecord,
@@ -29,6 +34,7 @@ api_router = APIRouter(tags=["chat-console"])
 logger = logging.getLogger(__name__)
 PROFILE_HYDRATION_TTL_SECONDS = 180.0
 PROFILE_HYDRATION_BATCH_SIZE = 30
+APPLICATION_STARTED_AT_MS = int(time.time() * 1000)
 _profile_hydration_attempts: dict[tuple[str, str], float] = {}
 
 
@@ -46,6 +52,7 @@ def serialize_conversation(record: ChatConversationRecord) -> PlatformConversati
         last_direction=record.last_direction if record.last_direction in {"inbound", "outbound"} else "inbound",
         last_sender_name=record.last_sender_name,
         unread_count=record.unread_count,
+        needs_admin_reply=record.needs_admin_reply,
         presence_status=presence.status if presence.status in {"offline", "online", "typing"} else "offline",
         presence_label=presence.label,
         presence_expires_at=presence.expires_at,
@@ -112,6 +119,31 @@ def should_store_personal_runtime_message(payload: RuntimeIncomingMessageRequest
         return False
 
     return True
+
+
+def mark_pre_activation_message_ineligible(runtime_payload: dict[str, object]) -> str:
+    """Keep old WhatsApp messages visible in the inbox without letting the bot answer them."""
+    message = runtime_payload.get("message", {})
+    if not isinstance(message, dict):
+        return ""
+
+    sent_at_ms = message_sent_epoch_ms(message)
+    runtime_activated_at_ms = epoch_ms(message.get("runtime_activated_at"))
+    activation_threshold_ms = max(APPLICATION_STARTED_AT_MS, runtime_activated_at_ms)
+    event_source = str(message.get("event_source") or "").strip()
+    reason = ""
+
+    if event_source == "history_sync" and not sent_at_ms:
+        reason = "missing_message_timestamp"
+    elif sent_at_ms and sent_at_ms < activation_threshold_ms:
+        reason = "before_runtime_activation"
+
+    if not reason:
+        return ""
+
+    message["bot_eligible"] = False
+    message["bot_skip_reason"] = reason
+    return reason
 
 
 def is_placeholder_contact_name(display_name: str, chat_id: str) -> bool:
@@ -316,7 +348,7 @@ def chat_console_page() -> str:
       </section>
     </main>
   </div>
-  <script src="/static/chat-monitor.js?v=chat-20260520-scroll"></script>
+  <script src="/static/chat-monitor.js?v=chat-20260520-admin"></script>
 </body>
 </html>"""
 
@@ -335,11 +367,13 @@ def receive_runtime_incoming_message(
             "reason": "non_personal_chat",
         }
 
+    runtime_payload = payload.model_dump()
+    replay_skip_reason = mark_pre_activation_message_ineligible(runtime_payload)
+    raw_message = runtime_payload.get("message", {}) if isinstance(runtime_payload.get("message"), dict) else {}
     chat_store = get_chat_store_service()
-    raw_message = payload.message if isinstance(payload.message, dict) else {}
     external_message_id = str(raw_message.get("external_message_id", "")).strip()
     existing_message = chat_store.get_message_by_external_id(payload.channel_key, external_message_id)
-    message = chat_store.store_incoming_message(payload.channel_key, payload.model_dump())
+    message = chat_store.store_incoming_message(payload.channel_key, runtime_payload)
     if existing_message is not None:
         return {
             "ok": True,
@@ -349,17 +383,20 @@ def receive_runtime_incoming_message(
         }
 
     bot_result: dict[str, object] = {"handled": False, "reason": "not_processed"}
-    try:
-        bot_result = get_platform_bot_runtime_service().process_runtime_incoming_message(
-            payload.channel_key,
-            payload.model_dump(),
-        )
-    except PlatformBotRuntimeError as exc:
-        logger.warning("Platform bot processing failed: %s", exc)
-        bot_result = {"handled": False, "reason": str(exc)}
-    except Exception as exc:
-        logger.exception("Unexpected bot processing error for runtime message")
-        bot_result = {"handled": False, "reason": f"bot_processing_error:{exc}"}
+    if replay_skip_reason:
+        bot_result = {"handled": False, "reason": replay_skip_reason}
+    else:
+        try:
+            bot_result = get_platform_bot_runtime_service().process_runtime_incoming_message(
+                payload.channel_key,
+                runtime_payload,
+            )
+        except PlatformBotRuntimeError as exc:
+            logger.warning("Platform bot processing failed: %s", exc)
+            bot_result = {"handled": False, "reason": str(exc)}
+        except Exception as exc:
+            logger.exception("Unexpected bot processing error for runtime message")
+            bot_result = {"handled": False, "reason": f"bot_processing_error:{exc}"}
     return {
         "ok": True,
         "record_id": message.record_id,
@@ -423,6 +460,7 @@ def send_platform_chat_reply(
         raw_payload=runtime_payload,
     )
     get_chat_store_service().mark_conversation_read(resolved_channel, chat_id)
+    get_chat_store_service().mark_admin_handoff(resolved_channel, chat_id, False)
     return PlatformChatSendResponse(
         channel_key=resolved_channel,
         chat_id=chat_id,

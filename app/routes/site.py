@@ -15,11 +15,11 @@ def landing_page() -> str:
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AI Connector</title>
-  <meta name="description" content="AI Connector connects WhatsApp Web JS, chat monitoring, Dify bots, and operator replies in one self-hosted platform." />
+  <meta name="description" content="AI Connector connects WhatsApp Web JS, chat monitoring, media messages, Dify, project integrations, and operator replies in one self-hosted platform." />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/brand.css?v=ai-connector-20260519c" />
+  <link rel="stylesheet" href="/static/brand.css?v=ai-connector-20260520-platform" />
 </head>
 <body>
   <div class="page-shell">
@@ -41,9 +41,10 @@ def landing_page() -> str:
           <div class="eyebrow">Self-hosted AI messaging platform</div>
           <h1>AI Connector</h1>
           <p class="hero-text">
-            Платформа связывает WhatsApp Web JS, мониторинг чатов, Dify-ботов и ручные ответы оператора в одной системе.
-            WhatsApp-сессия живет в локальном runtime, а FastAPI хранит диалоги,
-            управляет ботами и показывает рабочие страницы для подключения, поддержки и проверки статуса.
+            Платформа связывает WhatsApp Web JS, мониторинг чатов, фото из WhatsApp, Dify,
+            интеграции проектов и ручные ответы оператора в одной системе.
+            WhatsApp-сессия живет в локальном runtime, FastAPI хранит диалоги и media,
+            а активный бот или внешний проект получает входящие сообщения и возвращает ответ клиенту.
           </p>
           <div class="hero-actions">
             <a class="button button-primary" href="/connect/whatsapp">Подключить WhatsApp</a>
@@ -53,27 +54,27 @@ def landing_page() -> str:
         </div>
         <div class="hero-panel">
           <div class="hero-panel-card glow">
-            <div class="card-label">Platform status model</div>
+            <div class="card-label">Что уже подключено</div>
             <div class="card-grid">
               <article>
                 <span class="card-kicker">01</span>
                 <h3>WhatsApp Runtime</h3>
-                <p>Node.js runtime держит WhatsApp Web JS-сессию, QR-login, reconnect и отправку сообщений.</p>
+                <p>Node.js runtime держит WhatsApp Web JS-сессию, QR-login, reconnect, отправку сообщений и скачивание фото.</p>
               </article>
               <article>
                 <span class="card-kicker">02</span>
-                <h3>Inbox Sync</h3>
-                <p>FastAPI принимает события runtime, сохраняет новые личные диалоги и показывает их в `/chats`.</p>
+                <h3>Чаты и история</h3>
+                <p>FastAPI сохраняет личные диалоги, старые сообщения, фото и исходящие ответы в одной ленте `/chats`.</p>
               </article>
               <article>
                 <span class="card-kicker">03</span>
-                <h3>AI Bot Layer</h3>
-                <p>Dify-бот подключается как активный обработчик канала и отвечает только на разрешенные новые сообщения.</p>
+                <h3>Dify и проекты</h3>
+                <p>В `/bots` можно подключить Dify или внешний проект по webhook URL как активный обработчик WhatsApp.</p>
               </article>
               <article>
                 <span class="card-kicker">04</span>
-                <h3>Operator Control</h3>
-                <p>Оператор может видеть историю, отвечать вручную и отключать бота без потери WhatsApp-синхронизации.</p>
+                <h3>Контроль оператора</h3>
+                <p>Оператор видит историю, листает прошлые сообщения, смотрит фото и может отвечать вручную.</p>
               </article>
             </div>
           </div>
@@ -82,63 +83,93 @@ def landing_page() -> str:
 
       <section class="feature-strip">
         <article class="feature-card reveal is-visible">
-          <span class="feature-index">Transport</span>
-          <h2>WhatsApp без внешнего провайдера</h2>
+          <span class="feature-index">WhatsApp</span>
+          <h2>Транспорт без внешнего провайдера</h2>
           <p>
             Вся транспортная часть работает через `whatsapp-web.js`: QR-код, сохраненная сессия, локальный Chromium,
-            проверка `connected`, защита от отправки при обрыве и повторное подключение после disconnect.
+            проверка `connected`, повторное подключение после disconnect и отправка ответов обратно в WhatsApp.
           </p>
         </article>
         <article class="feature-card reveal is-visible">
-          <span class="feature-index">Storage</span>
-          <h2>Единая история чатов</h2>
+          <span class="feature-index">Media</span>
+          <h2>Фото видны в чате и уходят ботам</h2>
           <p>
-            Новые личные сообщения из WhatsApp попадают в SQLite, групповые и broadcast-события фильтруются,
-            а исходящие ответы оператора и бота сохраняются в той же ленте.
+            Входящие изображения сохраняются в `data/chat_media`, отображаются в мониторинге и передаются подключенному
+            боту или проекту в payload как `media.url`, `media.data` и `media.data_url`.
           </p>
         </article>
         <article class="feature-card reveal is-visible">
-          <span class="feature-index">Automation</span>
-          <h2>Бот включается отдельно</h2>
+          <span class="feature-index">Bots</span>
+          <h2>Dify или интеграция проекта</h2>
           <p>
-            Платформа может принимать сообщения уже после запуска, но бот отвечает только после активации
-            и не обрабатывает старые replay-сообщения как новые обращения.
+            В разделе “Боты” тип подключения меняет форму: для Dify нужны API URL и API Key,
+            для проекта — базовый URL и путь приема WhatsApp-сообщений.
           </p>
         </article>
       </section>
 
+      <section class="contract-section">
+        <div class="section-heading">
+          <span class="eyebrow">Быстрые действия</span>
+          <h2>Что можно сделать сейчас</h2>
+        </div>
+        <div class="contract-grid">
+          <article class="contract-card reveal is-visible">
+            <h3>Подключить WhatsApp</h3>
+            <p class="contract-note">Откройте QR-страницу, проверьте статус сессии и убедитесь, что runtime подключен.</p>
+            <div class="hero-actions">
+              <a class="button button-secondary" href="/connect/whatsapp">Открыть WhatsApp</a>
+            </div>
+          </article>
+          <article class="contract-card reveal is-visible">
+            <h3>Добавить обработчик</h3>
+            <p class="contract-note">Выберите Dify или “Интеграция проекта”, укажите URL и сразу подключите к WhatsApp.</p>
+            <div class="hero-actions">
+              <a class="button button-secondary" href="/bots">Открыть ботов</a>
+            </div>
+          </article>
+          <article class="contract-card reveal is-visible">
+            <h3>Проверить диалоги</h3>
+            <p class="contract-note">Смотрите историю, листайте прошлые сообщения, открывайте фото и отвечайте вручную.</p>
+            <div class="hero-actions">
+              <a class="button button-secondary" href="/chats">Открыть чаты</a>
+            </div>
+          </article>
+        </div>
+      </section>
+
       <section class="flow-section">
         <div class="section-heading">
-          <span class="eyebrow">Runtime flow</span>
+          <span class="eyebrow">Message flow</span>
           <h2>Как проходит одно сообщение</h2>
         </div>
         <div class="timeline">
           <article class="timeline-step reveal is-visible">
             <span>1</span>
             <div>
-              <h3>WhatsApp Web JS получает событие</h3>
-              <p>Runtime слушает `message` и `message_create`, определяет чат, направление, тип сообщения и источник.</p>
+              <h3>WhatsApp получает текст или фото</h3>
+              <p>Runtime слушает `message` и `message_create`, определяет чат, направление, тип сообщения и при наличии скачивает media.</p>
             </div>
           </article>
           <article class="timeline-step reveal is-visible">
             <span>2</span>
             <div>
-              <h3>Платформа сохраняет диалог</h3>
-              <p>FastAPI записывает событие в `/api/v1/runtime/incoming`, обновляет список разговоров и защищает историю от дублей.</p>
+              <h3>Платформа сохраняет сообщение</h3>
+              <p>FastAPI записывает событие в `/api/v1/runtime/incoming`, кладет фото в `/media` и обновляет историю диалога.</p>
             </div>
           </article>
           <article class="timeline-step reveal is-visible">
             <span>3</span>
             <div>
-              <h3>Бот проверяет право на ответ</h3>
-              <p>Если сообщение старше запуска runtime или старше активации бота, оно остается только контекстом и не получает автоответ.</p>
+              <h3>Активный бот получает payload</h3>
+              <p>Dify или интегрированный проект получает текст, chat_id, контекст последних сообщений и данные media, если клиент отправил фото.</p>
             </div>
           </article>
           <article class="timeline-step reveal is-visible">
             <span>4</span>
             <div>
-              <h3>Ответ возвращается в WhatsApp</h3>
-              <p>Операторский или AI-ответ отправляется через тот же runtime и фиксируется в истории как исходящее сообщение.</p>
+              <h3>Ответ возвращается клиенту</h3>
+              <p>Проект должен вернуть `{"answer":"..."}`. Платформа отправит этот текст в WhatsApp и сохранит ответ в истории.</p>
             </div>
           </article>
         </div>
@@ -146,26 +177,26 @@ def landing_page() -> str:
 
       <section class="contract-section">
         <div class="section-heading">
-          <span class="eyebrow">Production notes</span>
-          <h2>Что важно для сервера</h2>
+          <span class="eyebrow">Что важно знать</span>
+          <h2>Основные правила работы</h2>
         </div>
         <div class="contract-grid">
           <article class="contract-card reveal is-visible">
-            <h3>Постоянная сессия</h3>
+            <h3>Постоянная WhatsApp-сессия</h3>
             <p class="contract-note">
               Папка `data/runtime/sessions` должна жить на постоянном диске. Если ее удалить, WhatsApp попросит новый QR-login.
             </p>
           </article>
           <article class="contract-card reveal is-visible">
-            <h3>Один runtime</h3>
+            <h3>Один активный обработчик</h3>
             <p class="contract-note">
-              Для одного WhatsApp-аккаунта должен работать один Node runtime. Два процесса на одну session-папку могут ломать синхронизацию.
+              Для WhatsApp-канала одновременно подключается один активный бот или проект. Новый выбранный обработчик заменяет предыдущий.
             </p>
           </article>
           <article class="contract-card reveal is-visible">
-            <h3>Supervisor</h3>
+            <h3>Формат ответа проекта</h3>
             <p class="contract-note">
-              В проде FastAPI и Node runtime нужно держать под process manager, чтобы после рестарта сервера они поднялись автоматически.
+              Интегрированный проект должен отвечать JSON-ом с полем `answer`. Именно этот текст будет отправлен клиенту в WhatsApp.
             </p>
           </article>
         </div>

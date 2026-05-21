@@ -51,6 +51,7 @@ class PlatformConversationResponse(BaseModel):
     last_direction: Literal["inbound", "outbound"] = "inbound"
     last_sender_name: str = ""
     unread_count: int = 0
+    needs_admin_reply: bool = False
     presence_status: Literal["offline", "online", "typing"] = "offline"
     presence_label: str = ""
     presence_expires_at: str = ""

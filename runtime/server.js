@@ -42,10 +42,16 @@ const runtimePlatformCallbackUrl = String(
 const runtimePlatformCallbackToken = String(
   process.env.RUNTIME_PLATFORM_CALLBACK_TOKEN || process.env.RUNTIME_CALLBACK_TOKEN || runtimeToken || ""
 ).trim();
-const configuredStartupReplayGraceMs = Number(process.env.RUNTIME_STARTUP_REPLAY_GRACE_MS || "0");
-const startupReplayGraceMs = Number.isFinite(configuredStartupReplayGraceMs)
-  ? Math.max(0, configuredStartupReplayGraceMs)
-  : 3000;
+const historySyncEnabled = String(process.env.RUNTIME_HISTORY_SYNC_ENABLED || "true").trim().toLowerCase()
+  !== "false";
+const configuredHistorySyncChatLimit = Number(process.env.RUNTIME_HISTORY_SYNC_CHAT_LIMIT || "200");
+const historySyncChatLimit = Number.isFinite(configuredHistorySyncChatLimit)
+  ? Math.max(0, configuredHistorySyncChatLimit)
+  : 200;
+const configuredHistorySyncMessageLimit = Number(process.env.RUNTIME_HISTORY_SYNC_MESSAGE_LIMIT || "100");
+const historySyncMessageLimit = Number.isFinite(configuredHistorySyncMessageLimit)
+  ? Math.max(0, configuredHistorySyncMessageLimit)
+  : 100;
 const sessionRoot = path.resolve(__dirname, "..", "data", "runtime", "sessions");
 const reconnectBaseDelayMs = 5000;
 const reconnectMaxDelayMs = 60000;
@@ -142,6 +148,7 @@ function buildInitialState(channelKey, displayName) {
     reconnectAttempts: 0,
     isResetting: false,
     stallRestarting: false,
+    historySyncStarted: false,
     client: null,
     initPromise: null
   };
@@ -319,26 +326,29 @@ function messageTimestampMs(message) {
   return parsed > 10000000000 ? Math.floor(parsed) : Math.floor(parsed * 1000);
 }
 
-function resolveBotEligibility(state, message) {
-  const activatedAtMs = Number(state.botActivatedAtMs || 0);
+function resolveBotEligibility(state, message, eventName = "message") {
   const sentAtMs = messageTimestampMs(message);
-  if (!activatedAtMs) {
+  if (!state.botActivatedAtMs) {
     return {
       botEligible: false,
       botSkipReason: "runtime_not_ready",
       messageTimestampMs: sentAtMs
     };
   }
-
-  const activationThresholdMs = Math.floor((activatedAtMs - startupReplayGraceMs) / 1000) * 1000;
-  if (sentAtMs && sentAtMs < activationThresholdMs) {
+  if (!sentAtMs) {
+    return {
+      botEligible: eventName !== "history_sync",
+      botSkipReason: eventName === "history_sync" ? "missing_message_timestamp" : "",
+      messageTimestampMs: sentAtMs
+    };
+  }
+  if (sentAtMs < state.botActivatedAtMs) {
     return {
       botEligible: false,
       botSkipReason: "before_runtime_activation",
       messageTimestampMs: sentAtMs
     };
   }
-
   return {
     botEligible: true,
     botSkipReason: "",
@@ -806,7 +816,7 @@ async function handleRuntimeMessageEvent(state, message, eventName) {
             botSkipReason: "from_me",
             messageTimestampMs: messageTimestampMs(message)
           }
-        : resolveBotEligibility(state, message);
+        : resolveBotEligibility(state, message, eventName);
     const posted = await postIncomingMessageToPlatform(state, message, {
       chatId,
       eventName,
@@ -841,6 +851,61 @@ async function handleRuntimeMessageEvent(state, message, eventName) {
     if (messageId) {
       state.pendingForwardedMessageIds.delete(messageId);
     }
+  }
+}
+
+async function syncRecentPersonalMessages(state) {
+  if (!historySyncEnabled || state.historySyncStarted || !state.client) {
+    return;
+  }
+  if (!historySyncChatLimit || !historySyncMessageLimit) {
+    return;
+  }
+
+  state.historySyncStarted = true;
+  let forwardedCount = 0;
+  let scannedChatCount = 0;
+
+  try {
+    const chats = await state.client.getChats();
+    const personalChats = chats
+      .filter((chat) => isPersonalChatId(String(chat?.id?._serialized || "")))
+      .sort((left, right) => Number(right?.timestamp || 0) - Number(left?.timestamp || 0))
+      .slice(0, historySyncChatLimit);
+
+    for (const chat of personalChats) {
+      scannedChatCount += 1;
+      const chatId = String(chat?.id?._serialized || "").trim();
+      const messages = await chat.fetchMessages({ limit: historySyncMessageLimit }).catch((error) => {
+        console.warn(
+          `[runtime:${state.channelId}] history sync chat failed`,
+          JSON.stringify({ chatId, error: sanitizeError(error) })
+        );
+        return [];
+      });
+
+      const sortedMessages = messages
+        .slice()
+        .sort((left, right) => messageTimestampMs(left) - messageTimestampMs(right));
+      for (const message of sortedMessages) {
+        await handleRuntimeMessageEvent(state, message, "history_sync");
+        forwardedCount += 1;
+      }
+    }
+
+    console.log(
+      `[runtime:${state.channelId}] history sync complete`,
+      JSON.stringify({
+        scannedChats: scannedChatCount,
+        scannedMessages: forwardedCount,
+        chatLimit: historySyncChatLimit,
+        messageLimit: historySyncMessageLimit
+      })
+    );
+  } catch (error) {
+    state.historySyncStarted = false;
+    state.lastError = `WhatsApp history sync failed: ${sanitizeError(error)}`;
+    console.error(`[runtime:${state.channelId}] history sync failed`, state.lastError);
   }
 }
 
@@ -1003,6 +1068,10 @@ async function attachClientEventHandlers(state, client) {
     state.lastError = "";
     await refreshProfile(state);
     await ensureOnlinePresence(state);
+    syncRecentPersonalMessages(state).catch((error) => {
+      state.lastError = `WhatsApp history sync failed: ${sanitizeError(error)}`;
+      console.error(`[runtime:${state.channelId}] history sync failed`, state.lastError);
+    });
   });
 
   client.on("message", async (message) => {
@@ -1021,6 +1090,7 @@ async function attachClientEventHandlers(state, client) {
     state.qrCodeDataUrl = "";
     state.botActivatedAt = "";
     state.botActivatedAtMs = 0;
+    state.historySyncStarted = false;
     state.client = null;
     state.initPromise = null;
     state.lastError = sanitizeError(message || "WhatsApp authentication failed.");
@@ -1035,6 +1105,7 @@ async function attachClientEventHandlers(state, client) {
     state.qrCodeDataUrl = "";
     state.botActivatedAt = "";
     state.botActivatedAtMs = 0;
+    state.historySyncStarted = false;
     state.client = null;
     state.initPromise = null;
     state.lastError = sanitizeError(reason || "WhatsApp disconnected.");
@@ -1059,6 +1130,7 @@ async function createClient(state) {
   state.lastError = "";
   state.botActivatedAt = "";
   state.botActivatedAtMs = 0;
+  state.historySyncStarted = false;
   await attachClientEventHandlers(state, client);
 
   try {
@@ -1179,6 +1251,7 @@ async function destroyClient(state, wipeSession) {
   state.profile = buildEmptyProfile();
   state.botActivatedAt = "";
   state.botActivatedAtMs = 0;
+  state.historySyncStarted = false;
 
   if (wipeSession) {
     await removeSessionDirectoryWithRetries(sessionDirectory(state.channelId));

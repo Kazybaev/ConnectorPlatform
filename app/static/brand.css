@@ -1509,6 +1509,15 @@ body::before {
   font-size: 0.72rem;
 }
 
+.conversation-admin-alert {
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 205, 99, 0.28);
+  background: rgba(255, 205, 99, 0.14);
+  color: #ffd37a;
+  font-weight: 700;
+}
+
 .inbox-avatar {
   width: 42px;
   height: 42px;

@@ -122,6 +122,7 @@ class ChatConversationRecord:
     last_direction: str
     last_sender_name: str
     unread_count: int
+    needs_admin_reply: bool
     created_at: str
     updated_at: str
 
@@ -170,6 +171,7 @@ class ChatStoreService:
                     last_direction,
                     last_sender_name,
                     unread_count,
+                    needs_admin_reply,
                     created_at,
                     updated_at
                 FROM chat_conversations
@@ -196,6 +198,7 @@ class ChatStoreService:
                 last_direction=row["last_direction"] or "inbound",
                 last_sender_name=row["last_sender_name"] or "",
                 unread_count=int(row["unread_count"] or 0),
+                needs_admin_reply=bool(row["needs_admin_reply"] or 0),
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
             )
@@ -588,6 +591,19 @@ class ChatStoreService:
             )
             connection.commit()
 
+    def mark_admin_handoff(self, channel_key: str, chat_id: str, active: bool = True) -> None:
+        """Mark that a bot could not answer and an operator should review the chat."""
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE chat_conversations
+                SET needs_admin_reply = ?, updated_at = ?
+                WHERE channel_key = ? AND chat_id = ?
+                """,
+                (1 if active else 0, utc_now_iso(), channel_key, chat_id),
+            )
+            connection.commit()
+
     def _upsert_conversation(
         self,
         connection: sqlite3.Connection,
@@ -637,11 +653,12 @@ class ChatStoreService:
                 last_message_text,
                 last_message_at,
                 last_direction,
-                last_sender_name,
-                unread_count,
-                created_at,
-                updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_sender_name,
+                    unread_count,
+                    needs_admin_reply,
+                    created_at,
+                    updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
             ON CONFLICT(channel_key, chat_id) DO UPDATE SET
                 display_name = excluded.display_name,
                 phone = excluded.phone,
@@ -701,6 +718,7 @@ class ChatStoreService:
                     last_direction TEXT NOT NULL DEFAULT 'inbound',
                     last_sender_name TEXT NOT NULL DEFAULT '',
                     unread_count INTEGER NOT NULL DEFAULT 0,
+                    needs_admin_reply INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (channel_key, chat_id)
@@ -732,7 +750,30 @@ class ChatStoreService:
                 ON chat_conversations(channel_key, last_message_at);
                 """
             )
+            self._ensure_column(
+                connection,
+                table_name="chat_conversations",
+                column_name="needs_admin_reply",
+                definition="INTEGER NOT NULL DEFAULT 0",
+            )
             connection.commit()
+
+    def _ensure_column(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        table_name: str,
+        column_name: str,
+        definition: str,
+    ) -> None:
+        columns = {
+            str(row["name"])
+            for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+        if column_name in columns:
+            return
+
+        connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:

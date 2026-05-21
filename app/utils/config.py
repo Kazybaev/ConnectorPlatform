@@ -57,7 +57,7 @@ class Settings(BaseModel):
     bot_typing_max_seconds: float = 6.0
     bot_typing_chars_per_second: float = 18.0
     bot_failure_reply_enabled: bool = True
-    bot_failure_reply_text: str = "Сейчас ассистент временно недоступен. Попробуйте чуть позже."
+    bot_failure_reply_text: str = "Передам ваше сообщение администратору."
 
     @field_validator("log_level")
     @classmethod

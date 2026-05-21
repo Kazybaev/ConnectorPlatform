@@ -266,11 +266,6 @@ class BotRegistryService:
         if linked_custom_bot is not None:
             return self.connect_bot_to_channel(linked_custom_bot.id, channel_key)
 
-        if self.has_custom_bot_for_channel(channel_key):
-            if connected is not None and connected.is_default_template:
-                self.disconnect_bot_from_channel(connected.id, channel_key)
-            return record
-
         if not record.enabled:
             return record
 

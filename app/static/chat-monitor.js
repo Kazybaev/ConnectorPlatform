@@ -189,6 +189,9 @@
           conversation.unread_count > 0
             ? `<span class="conversation-unread">${conversation.unread_count}</span>`
             : "";
+        const adminAlert = conversation.needs_admin_reply
+          ? '<span class="conversation-admin-alert">Нужен админ</span>'
+          : "";
         const preview = conversation.last_message_text || "Сообщений пока нет";
         const name = getConversationName(conversation);
         const directionIcon = conversation.last_direction === "outbound" ? "↩" : "↪";
@@ -204,6 +207,7 @@
                 <span>◉ WhatsApp</span>
                 ${presenceMarkup}
                 <span>${escapeHtml(conversation.phone || conversation.chat_id)}</span>
+                ${adminAlert}
                 ${unread}
               </div>
               <p><span>${directionIcon}</span>${escapeHtml(preview)}</p>
@@ -314,6 +318,12 @@
 
     setActiveAvatar(conversation);
     dom.activeChatName.textContent = getConversationName(conversation);
+    if (conversation.needs_admin_reply) {
+      dom.activeChatMeta.classList.remove("is-typing", "is-online");
+      dom.activeChatMeta.textContent = "Бот не ответил. Нужно посмотреть администратору.";
+      dom.chatStatusPill.textContent = "Нужен админ";
+      return;
+    }
     setPresenceMeta(conversation);
     const presenceStatus = getPresenceStatus(conversation);
     if (presenceStatus === "typing") {
