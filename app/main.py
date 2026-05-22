@@ -42,6 +42,8 @@ PUBLIC_PATH_PREFIXES = (
     "/reset-password",
     "/logout",
     "/auth/google",
+    "/connect/whatsapp",
+    "/api/v1/connect/whatsapp",
     "/health",
     "/docs",
     "/openapi.json",

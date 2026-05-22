@@ -1,4 +1,5 @@
 const express = require("express");
+const childProcess = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const QRCode = require("qrcode");
@@ -65,6 +66,18 @@ const configuredTypingRefreshMs = Number(process.env.RUNTIME_TYPING_REFRESH_MS |
 const typingRefreshMs = Number.isFinite(configuredTypingRefreshMs)
   ? Math.max(1500, configuredTypingRefreshMs)
   : 3500;
+const configuredHumanTypingMinMs = Number(process.env.RUNTIME_HUMAN_TYPING_MIN_MS || "1200");
+const humanTypingMinMs = Number.isFinite(configuredHumanTypingMinMs)
+  ? Math.max(300, configuredHumanTypingMinMs)
+  : 1200;
+const configuredHumanTypingMaxMs = Number(process.env.RUNTIME_HUMAN_TYPING_MAX_MS || "6000");
+const humanTypingMaxMs = Number.isFinite(configuredHumanTypingMaxMs)
+  ? Math.max(humanTypingMinMs, configuredHumanTypingMaxMs)
+  : 6000;
+const configuredHumanTypingCharsPerSecond = Number(process.env.RUNTIME_HUMAN_TYPING_CHARS_PER_SECOND || "18");
+const humanTypingCharsPerSecond = Number.isFinite(configuredHumanTypingCharsPerSecond)
+  ? Math.max(1, configuredHumanTypingCharsPerSecond)
+  : 18;
 const onlinePresenceEnabled = String(process.env.RUNTIME_ONLINE_PRESENCE_ENABLED || "true").trim().toLowerCase()
   !== "false";
 const configuredPresenceRefreshMs = Number(process.env.RUNTIME_ONLINE_PRESENCE_REFRESH_MS || "15000");
@@ -103,6 +116,37 @@ function sanitizeError(error) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function killProcessTree(pid) {
+  return new Promise((resolve) => {
+    const processId = Number(pid);
+    if (!Number.isFinite(processId) || processId <= 0) {
+      resolve();
+      return;
+    }
+
+    if (process.platform === "win32") {
+      childProcess.execFile(
+        "taskkill",
+        ["/PID", String(Math.floor(processId)), "/T", "/F"],
+        { windowsHide: true },
+        () => resolve()
+      );
+      return;
+    }
+
+    try {
+      process.kill(-processId, "SIGKILL");
+    } catch (_error) {
+      try {
+        process.kill(processId, "SIGKILL");
+      } catch (_innerError) {
+        // Process already exited.
+      }
+    }
+    resolve();
+  });
 }
 
 function buildEmptyProfile() {
@@ -386,6 +430,19 @@ function typingSessionKey(chatId) {
   return String(chatId || "").trim();
 }
 
+function resolveHumanTypingDelayMs(text, requestedDelayMs) {
+  const parsedRequestedDelayMs = Number(requestedDelayMs);
+  if (Number.isFinite(parsedRequestedDelayMs) && parsedRequestedDelayMs >= 0) {
+    return Math.min(humanTypingMaxMs, Math.max(0, Math.floor(parsedRequestedDelayMs)));
+  }
+
+  const textLength = String(text || "").trim().length;
+  return Math.min(
+    humanTypingMaxMs,
+    Math.max(humanTypingMinMs, Math.ceil((textLength / humanTypingCharsPerSecond) * 1000))
+  );
+}
+
 function clearPresenceKeepaliveTimer(state) {
   if (!state.presenceKeepaliveTimer) {
     return;
@@ -560,6 +617,26 @@ async function sendTypingPulse(state, chatId) {
   await chat.sendStateTyping();
 }
 
+async function markChatSeenAndOnline(state, chatId) {
+  const key = typingSessionKey(chatId);
+  if (!key || !state.client || state.connectionStatus !== "connected") {
+    return;
+  }
+
+  try {
+    const chat = await state.client.getChatById(key);
+    if (typeof chat.sendSeen === "function") {
+      await chat.sendSeen();
+    } else if (typeof state.client.sendSeen === "function") {
+      await state.client.sendSeen(key);
+    }
+    await ensureOnlinePresence(state);
+  } catch (error) {
+    state.lastError = `Seen/online state failed: ${sanitizeError(error)}`;
+    console.error(`[runtime:${state.channelId}] seen/online state failed`, state.lastError);
+  }
+}
+
 async function startTypingState(state, chatId) {
   const key = typingSessionKey(chatId);
   if (!key) {
@@ -624,6 +701,29 @@ async function stopTypingState(state, chatId, options = {}) {
     await sendOnlinePresence(state);
   } catch (error) {
     state.lastError = `Typing clear failed: ${sanitizeError(error)}`;
+  }
+}
+
+async function simulateTypingBeforeSend(state, chatId, text, requestedDelayMs) {
+  const key = typingSessionKey(chatId);
+  if (!key) {
+    return;
+  }
+
+  const alreadyTyping = state.activeTypingSessions.has(key);
+  if (!alreadyTyping) {
+    await startTypingState(state, key);
+  } else {
+    await sendTypingPulse(state, key);
+  }
+
+  const delayMs = resolveHumanTypingDelayMs(text, requestedDelayMs);
+  if (delayMs > 0) {
+    await sleep(delayMs);
+  }
+
+  if (!alreadyTyping) {
+    await stopTypingState(state, key);
   }
 }
 
@@ -809,6 +909,9 @@ async function handleRuntimeMessageEvent(state, message, eventName) {
     const fromMe = Boolean(message.fromMe);
     const isSelfChat = Boolean(ownWid && chatId && chatId === ownWid);
     const allowBotReply = Boolean(fromMe && isSelfChat);
+    if (!fromMe && eventName !== "history_sync") {
+      await markChatSeenAndOnline(state, chatId);
+    }
     const botEligibility =
       fromMe && !allowBotReply
         ? {
@@ -1242,12 +1345,18 @@ async function destroyClient(state, wipeSession) {
   clearReconnectTimer(state);
   clearPresenceKeepaliveTimer(state);
   await stopAllTypingStates(state, { clearRemoteState: true });
+  const browserProcess = state.client?.pupBrowser?.process?.();
+  const browserPid = browserProcess?.pid || 0;
   if (state.client) {
     try {
       await state.client.destroy();
     } catch (_destroyError) {
       // Cleanup should continue even if the client is already gone.
     }
+  }
+  if (browserPid) {
+    await killProcessTree(browserPid);
+    await sleep(500);
   }
 
   state.client = null;
@@ -1453,6 +1562,8 @@ app.post("/api/v1/channels/:channelKey/messages/send", requireRuntimeToken, asyn
 
   const chatId = String(req.body?.chat_id || "").trim();
   const text = String(req.body?.text || "").trim();
+  const simulateTyping = req.body?.simulate_typing !== false;
+  const typingDelayMs = req.body?.typing_delay_ms;
   if (!chatId || !text) {
     res.status(400).json({ detail: "chat_id and text are required." });
     return;
@@ -1465,8 +1576,12 @@ app.post("/api/v1/channels/:channelKey/messages/send", requireRuntimeToken, asyn
       return;
     }
 
+    if (simulateTyping) {
+      await simulateTypingBeforeSend(state, chatId, text, typingDelayMs);
+    }
     const message = await state.client.sendMessage(chatId, text);
     state.lastMessageAt = nowIso();
+    await ensureOnlinePresence(state);
     rememberPlatformOutboundMessage(state, String(message.id?._serialized || "").trim());
     res.json({ id_message: String(message.id?._serialized || "") });
   } catch (error) {

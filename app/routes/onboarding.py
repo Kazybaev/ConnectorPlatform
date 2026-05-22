@@ -4,15 +4,28 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from app.models.schemas import SimpleWhatsAppConnectionResponse
+from app.routes.auth import current_user_from_request
 from app.services.self_hosted_runtime_service import (
     SelfHostedRuntimeServiceError,
     get_self_hosted_runtime_service,
 )
-from app.services.tenant import request_user, user_channel_key, user_connection_name
+from app.services.tenant import user_channel_key, user_connection_name
 from app.utils.config import get_settings
 
 router = APIRouter(include_in_schema=False)
 api_router = APIRouter(prefix="/api/v1/connect/whatsapp", tags=["connect"])
+
+
+def resolve_connection_identity(request: Request) -> tuple[str, str]:
+    """Use the logged-in user's channel when available, otherwise the default platform channel."""
+    user = current_user_from_request(request)
+    if user is not None:
+        return user_channel_key(user), user_connection_name(user)
+
+    settings = get_settings()
+    return settings.runtime_platform_channel_key, settings.simple_connect_name
+
+
 def build_error_response(
     error_message: str,
     *,
@@ -118,10 +131,8 @@ def collect_simple_connection_snapshot(
     """Read the current user's WhatsApp connection state from the local runtime."""
     del include_qr
 
-    user = request_user(request)
     runtime_service = get_self_hosted_runtime_service()
-    channel_key = user_channel_key(user)
-    connection_name = user_connection_name(user)
+    channel_key, connection_name = resolve_connection_identity(request)
 
     try:
         if reset_session:

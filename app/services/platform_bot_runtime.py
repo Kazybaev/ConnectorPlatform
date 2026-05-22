@@ -194,7 +194,12 @@ class PlatformBotRuntimeService:
             sent_message_ids: list[str] = []
             for chunk in split_text_chunks(answer_text):
                 try:
-                    runtime_response = runtime_service.send_message(channel_key, chat_id, chunk)
+                    runtime_response = runtime_service.send_message(
+                        channel_key,
+                        chat_id,
+                        chunk,
+                        simulate_typing=False,
+                    )
                 except SelfHostedRuntimeServiceError as exc:
                     raise PlatformBotRuntimeError(str(exc)) from exc
 

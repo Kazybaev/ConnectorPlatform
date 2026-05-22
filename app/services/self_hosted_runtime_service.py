@@ -101,16 +101,29 @@ class SelfHostedRuntimeService:
             timeout_seconds=90,
         )
 
-    def send_message(self, channel_key: str, chat_id: str, text: str) -> dict[str, Any]:
+    def send_message(
+        self,
+        channel_key: str,
+        chat_id: str,
+        text: str,
+        *,
+        simulate_typing: bool = True,
+        typing_delay_ms: int | None = None,
+    ) -> dict[str, Any]:
         """Send one outbound WhatsApp message through the local runtime."""
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "text": text,
+            "simulate_typing": simulate_typing,
+        }
+        if typing_delay_ms is not None:
+            payload["typing_delay_ms"] = typing_delay_ms
+
         self.ensure_runtime_started()
         return self._request(
             method="POST",
             path=f"/api/v1/channels/{channel_key}/messages/send",
-            json={
-                "chat_id": chat_id,
-                "text": text,
-            },
+            json=payload,
         )
 
     def set_typing(self, channel_key: str, chat_id: str, active: bool) -> dict[str, Any]:
