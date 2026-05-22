@@ -1121,7 +1121,18 @@ async function createClient(state) {
     }),
     puppeteer: {
       headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+      protocolTimeout: 120000,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-quic",
+        "--disable-features=UseDnsHttpsSvcbAlpn,UseChromeRootStore",
+        "--disable-http2",
+        "--ignore-certificate-errors",
+        "--no-first-run",
+        "--no-default-browser-check"
+      ]
     }
   });
 

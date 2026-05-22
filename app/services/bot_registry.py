@@ -26,6 +26,7 @@ class BotRecord:
     endpoint_url: str
     authorization_header: str
     owner_label: str
+    owner_user_id: str
     workflow_summary: str
     linked_project_id: str
     linked_channel_key: str
@@ -62,8 +63,10 @@ class BotRegistryService:
         self._initialize_schema()
         self.sync_default_bot_from_settings()
 
-    def list_bots(self) -> list[BotRecord]:
+    def list_bots(self, *, owner_user_id: str = "", channel_key: str = "") -> list[BotRecord]:
         """Return all known bots with the default template pinned first."""
+        owner_user_id = owner_user_id.strip()
+        channel_key = channel_key.strip()
         with self._connect() as connection:
             rows = connection.execute(
                 """
@@ -76,6 +79,7 @@ class BotRegistryService:
                     endpoint_url,
                     authorization_header,
                     owner_label,
+                    owner_user_id,
                     workflow_summary,
                     linked_project_id,
                     linked_channel_key,
@@ -86,15 +90,41 @@ class BotRegistryService:
                     created_at,
                     updated_at
                 FROM platform_bots
+                WHERE is_default_template = 1
+                    OR owner_user_id = ?
+                    OR (owner_user_id = '' AND linked_channel_key = ?)
                 ORDER BY is_default_template DESC, created_at DESC
-                """
+                """,
+                (owner_user_id, channel_key),
             ).fetchall()
             connections = self._load_connected_channels(connection)
 
         return [self._row_to_record(row, connections) for row in rows]
 
-    def get_bot(self, bot_id: str) -> BotRecord | None:
+    def get_bot(
+        self,
+        bot_id: str,
+        *,
+        owner_user_id: str = "",
+        channel_key: str = "",
+        include_default: bool = True,
+    ) -> BotRecord | None:
         """Return one bot by its stable id."""
+        owner_user_id = owner_user_id.strip()
+        channel_key = channel_key.strip()
+        access_clause = ""
+        parameters: tuple[object, ...] = (bot_id,)
+        if owner_user_id or channel_key:
+            default_clause = " OR is_default_template = 1" if include_default else ""
+            access_clause = f"""
+                AND (
+                    owner_user_id = ?
+                    OR (owner_user_id = '' AND linked_channel_key = ?)
+                    {default_clause}
+                )
+            """
+            parameters = (bot_id, owner_user_id, channel_key)
+
         with self._connect() as connection:
             row = connection.execute(
                 """
@@ -107,6 +137,7 @@ class BotRegistryService:
                     endpoint_url,
                     authorization_header,
                     owner_label,
+                    owner_user_id,
                     workflow_summary,
                     linked_project_id,
                     linked_channel_key,
@@ -118,8 +149,8 @@ class BotRegistryService:
                     updated_at
                 FROM platform_bots
                 WHERE id = ?
-                """,
-                (bot_id,),
+                """ + access_clause,
+                parameters,
             ).fetchone()
             connections = self._load_connected_channels(connection)
 
@@ -139,6 +170,7 @@ class BotRegistryService:
                     endpoint_url,
                     authorization_header,
                     owner_label,
+                    owner_user_id,
                     workflow_summary,
                     linked_project_id,
                     linked_channel_key,
@@ -158,7 +190,14 @@ class BotRegistryService:
 
         return self._row_to_record(row, connections) if row is not None else None
 
-    def create_bot(self, payload: BotCreateRequest, *, is_default_template: bool = False) -> BotRecord:
+    def create_bot(
+        self,
+        payload: BotCreateRequest,
+        *,
+        is_default_template: bool = False,
+        owner_user_id: str = "",
+        channel_key: str = "",
+    ) -> BotRecord:
         """Persist one bot definition and its linked variables and APIs."""
         existing = self.get_bot_by_slug(payload.slug)
         if existing is not None:
@@ -166,7 +205,7 @@ class BotRegistryService:
 
         now = utc_now_iso()
         bot_id = f"bot_{uuid4().hex[:12]}"
-        linked_channel_key = payload.linked_channel_key or self._settings.runtime_platform_channel_key
+        linked_channel_key = channel_key or payload.linked_channel_key or self._settings.runtime_platform_channel_key
 
         with self._connect() as connection:
             connection.execute(
@@ -180,6 +219,7 @@ class BotRegistryService:
                     endpoint_url,
                     authorization_header,
                     owner_label,
+                    owner_user_id,
                     workflow_summary,
                     linked_project_id,
                     linked_channel_key,
@@ -189,7 +229,7 @@ class BotRegistryService:
                     api_bindings_json,
                     created_at,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     bot_id,
@@ -200,6 +240,7 @@ class BotRegistryService:
                     payload.endpoint_url.rstrip("/"),
                     payload.authorization_header,
                     payload.owner_label,
+                    "" if is_default_template else owner_user_id.strip(),
                     payload.workflow_summary,
                     payload.linked_project_id,
                     linked_channel_key,
@@ -214,9 +255,9 @@ class BotRegistryService:
             connection.commit()
 
         if payload.enabled and not is_default_template:
-            return self.connect_bot_to_channel(bot_id, linked_channel_key)
+            return self.connect_bot_to_channel(bot_id, linked_channel_key, owner_user_id=owner_user_id)
 
-        record = self.get_bot(bot_id)
+        record = self.get_bot(bot_id, owner_user_id=owner_user_id, channel_key=linked_channel_key)
         if record is None:
             raise RuntimeError("Bot was created but could not be loaded back.")
         return record
@@ -274,9 +315,16 @@ class BotRegistryService:
 
         return self.connect_bot_to_channel(record.id, channel_key)
 
-    def set_bot_enabled(self, bot_id: str, enabled: bool) -> BotRecord:
+    def set_bot_enabled(
+        self,
+        bot_id: str,
+        enabled: bool,
+        *,
+        owner_user_id: str = "",
+        channel_key: str = "",
+    ) -> BotRecord:
         """Activate or deactivate one registered bot."""
-        record = self.get_bot(bot_id)
+        record = self.get_bot(bot_id, owner_user_id=owner_user_id, channel_key=channel_key, include_default=False)
         if record is None:
             raise ValueError("Bot not found.")
 
@@ -302,17 +350,17 @@ class BotRegistryService:
             connection.commit()
 
         if enabled:
-            channel_key = record.linked_channel_key or self._settings.runtime_platform_channel_key
-            return self.connect_bot_to_channel(bot_id, channel_key)
+            resolved_channel = channel_key or record.linked_channel_key or self._settings.runtime_platform_channel_key
+            return self.connect_bot_to_channel(bot_id, resolved_channel, owner_user_id=owner_user_id)
 
-        refreshed = self.get_bot(bot_id)
+        refreshed = self.get_bot(bot_id, owner_user_id=owner_user_id, channel_key=channel_key, include_default=False)
         if refreshed is None:
             raise RuntimeError("Bot activation state was saved but could not be reloaded.")
         return refreshed
 
-    def connect_bot_to_channel(self, bot_id: str, channel_key: str) -> BotRecord:
+    def connect_bot_to_channel(self, bot_id: str, channel_key: str, *, owner_user_id: str = "") -> BotRecord:
         """Attach one enabled bot as the active runtime bot for a specific channel."""
-        record = self.get_bot(bot_id)
+        record = self.get_bot(bot_id, owner_user_id=owner_user_id, channel_key=channel_key)
         if record is None:
             raise ValueError("Bot not found.")
 
@@ -352,14 +400,14 @@ class BotRegistryService:
             )
             connection.commit()
 
-        refreshed = self.get_bot(bot_id)
+        refreshed = self.get_bot(bot_id, owner_user_id=owner_user_id, channel_key=channel_key)
         if refreshed is None:
             raise RuntimeError("Bot connection was saved but could not be reloaded.")
         return refreshed
 
-    def disconnect_bot_from_channel(self, bot_id: str, channel_key: str) -> BotRecord:
+    def disconnect_bot_from_channel(self, bot_id: str, channel_key: str, *, owner_user_id: str = "") -> BotRecord:
         """Detach one bot from the active runtime slot for the given channel."""
-        record = self.get_bot(bot_id)
+        record = self.get_bot(bot_id, owner_user_id=owner_user_id, channel_key=channel_key)
         if record is None:
             raise ValueError("Bot not found.")
 
@@ -374,14 +422,14 @@ class BotRegistryService:
             )
             connection.commit()
 
-        refreshed = self.get_bot(bot_id)
+        refreshed = self.get_bot(bot_id, owner_user_id=owner_user_id, channel_key=channel_key)
         if refreshed is None:
             raise RuntimeError("Bot disconnection was saved but could not be reloaded.")
         return refreshed
 
-    def delete_bot(self, bot_id: str) -> BotRecord:
+    def delete_bot(self, bot_id: str, *, owner_user_id: str = "", channel_key: str = "") -> BotRecord:
         """Delete one custom bot and all of its channel/thread state."""
-        record = self.get_bot(bot_id)
+        record = self.get_bot(bot_id, owner_user_id=owner_user_id, channel_key=channel_key)
         if record is None:
             raise ValueError("Bot not found.")
         if record.is_default_template:
@@ -407,6 +455,7 @@ class BotRegistryService:
                     b.endpoint_url,
                     b.authorization_header,
                     b.owner_label,
+                    b.owner_user_id,
                     b.workflow_summary,
                     b.linked_project_id,
                     b.linked_channel_key,
@@ -459,6 +508,7 @@ class BotRegistryService:
                     endpoint_url,
                     authorization_header,
                     owner_label,
+                    owner_user_id,
                     workflow_summary,
                     linked_project_id,
                     linked_channel_key,
@@ -669,6 +719,7 @@ class BotRegistryService:
                     endpoint_url TEXT NOT NULL DEFAULT '',
                     authorization_header TEXT NOT NULL DEFAULT '',
                     owner_label TEXT NOT NULL DEFAULT '',
+                    owner_user_id TEXT NOT NULL DEFAULT '',
                     workflow_summary TEXT NOT NULL DEFAULT '',
                     linked_project_id TEXT NOT NULL DEFAULT '',
                     linked_channel_key TEXT NOT NULL DEFAULT '',
@@ -708,7 +759,36 @@ class BotRegistryService:
                 ON platform_bot_connections(channel_key, enabled, updated_at);
                 """
             )
+            self._ensure_column(
+                connection,
+                table_name="platform_bots",
+                column_name="owner_user_id",
+                definition="TEXT NOT NULL DEFAULT ''",
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_platform_bots_owner
+                ON platform_bots(owner_user_id, linked_channel_key, created_at)
+                """
+            )
             connection.commit()
+
+    def _ensure_column(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        table_name: str,
+        column_name: str,
+        definition: str,
+    ) -> None:
+        columns = {
+            str(row["name"])
+            for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+        if column_name in columns:
+            return
+
+        connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
     def _load_connected_channels(self, connection: sqlite3.Connection) -> dict[str, list[str]]:
         rows = connection.execute(
@@ -736,6 +816,7 @@ class BotRegistryService:
             endpoint_url=row["endpoint_url"] or "",
             authorization_header=row["authorization_header"] or "",
             owner_label=row["owner_label"] or "",
+            owner_user_id=row["owner_user_id"] or "",
             workflow_summary=row["workflow_summary"] or "",
             linked_project_id=row["linked_project_id"] or "",
             linked_channel_key=row["linked_channel_key"] or "",

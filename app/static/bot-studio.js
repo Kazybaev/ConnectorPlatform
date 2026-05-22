@@ -430,3 +430,10 @@ resetDetailView();
 wireEvents();
 updateTypeFields();
 loadBotList();
+const botStudioNavLinks = document.querySelector(".nav-links");
+if (botStudioNavLinks && !botStudioNavLinks.querySelector('[href="/logout"]')) {
+  const logoutLink = document.createElement("a");
+  logoutLink.href = "/logout";
+  logoutLink.textContent = "Выйти";
+  botStudioNavLinks.appendChild(logoutLink);
+}

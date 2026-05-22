@@ -10,6 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.routes.auth import current_user_from_request
+from app.routes.auth import router as auth_router
 from app.routes.health import router as health_router
 from app.routes.chat_console import api_router as chat_console_api_router
 from app.routes.chat_console import router as chat_console_router
@@ -20,8 +22,8 @@ from app.routes.onboarding import router as onboarding_router
 from app.routes.site import router as site_router
 from app.routes.upload import router as upload_router
 from app.services.chat_store import get_chat_store_service
+from app.services.auth_service import get_auth_service
 from app.services.bot_registry import get_bot_registry_service
-from app.services.self_hosted_runtime_service import SelfHostedRuntimeServiceError, get_self_hosted_runtime_service
 from app.utils.config import get_settings
 from app.utils.logging import configure_logging
 
@@ -32,30 +34,30 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 MEDIA_DIR = Path(__file__).resolve().parents[1] / "data" / "chat_media"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
+PUBLIC_PATH_PREFIXES = (
+    "/static",
+    "/login",
+    "/register",
+    "/forgot-password",
+    "/reset-password",
+    "/logout",
+    "/auth/google",
+    "/health",
+    "/docs",
+    "/openapi.json",
+)
+
+PUBLIC_EXACT_PATHS = {
+    "/api/v1/runtime/incoming",
+}
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     logger.info("Starting %s", settings.app_name)
+    get_auth_service()
     get_chat_store_service()
-    bot_registry = get_bot_registry_service()
-    try:
-        get_self_hosted_runtime_service().ensure_channel(
-            settings.runtime_platform_channel_key,
-            settings.simple_connect_name,
-        )
-        logger.info("Runtime channel %s is ready", settings.runtime_platform_channel_key)
-    except SelfHostedRuntimeServiceError as exc:
-        logger.warning("Runtime channel bootstrap failed: %s", exc)
-
-    try:
-        connected_bot = bot_registry.ensure_default_bot_connected()
-        logger.info(
-            "Bot channel binding is ready: channel=%s bot=%s",
-            settings.runtime_platform_channel_key,
-            connected_bot.slug,
-        )
-    except Exception as exc:
-        logger.warning("Bot channel binding failed: %s", exc)
+    get_bot_registry_service()
     yield
     logger.info("Stopping %s", settings.app_name)
 
@@ -80,6 +82,7 @@ app.add_middleware(
 )
 
 app.include_router(health_router)
+app.include_router(auth_router)
 app.include_router(upload_router)
 app.include_router(site_router)
 app.include_router(onboarding_router)
@@ -88,6 +91,28 @@ app.include_router(chat_console_router)
 app.include_router(chat_console_api_router)
 app.include_router(bot_console_router)
 app.include_router(bot_console_api_router)
+
+
+@app.middleware("http")
+async def require_authenticated_user(request: Request, call_next):
+    path = request.url.path
+    if path in PUBLIC_EXACT_PATHS or any(path.startswith(prefix) for prefix in PUBLIC_PATH_PREFIXES):
+        return await call_next(request)
+
+    user = current_user_from_request(request)
+    if user is not None:
+        request.state.current_user = user
+        return await call_next(request)
+
+    if path.startswith("/api/"):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Authentication required."},
+        )
+
+    from fastapi.responses import RedirectResponse
+
+    return RedirectResponse("/login", status_code=303)
 
 
 @app.exception_handler(Exception)

@@ -39,6 +39,11 @@ class Settings(BaseModel):
     database_path: str = str(ROOT_DIR / "data" / "whatsapp_platform.sqlite3")
     platform_admin_token: str = ""
     platform_public_base_url: str = "http://127.0.0.1:8000"
+    auth_session_cookie_name: str = "ai_connector_session"
+    auth_session_secret: str = ""
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: str = ""
+    google_oauth_redirect_uri: str = ""
     connect_timeout_seconds: float = 5.0
     request_timeout_seconds: float = 30.0
     runtime_channels_refresh_seconds: float = 15.0
@@ -111,6 +116,14 @@ class Settings(BaseModel):
                 "PLATFORM_PUBLIC_BASE_URL",
                 cls.model_fields["platform_public_base_url"].default,
             ).strip().rstrip("/"),
+            auth_session_cookie_name=os.getenv(
+                "AUTH_SESSION_COOKIE_NAME",
+                cls.model_fields["auth_session_cookie_name"].default,
+            ).strip(),
+            auth_session_secret=os.getenv("AUTH_SESSION_SECRET", "").strip(),
+            google_oauth_client_id=os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip(),
+            google_oauth_client_secret=os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "").strip(),
+            google_oauth_redirect_uri=os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "").strip(),
             connect_timeout_seconds=float(
                 os.getenv(
                     "CONNECT_TIMEOUT_SECONDS",

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from app.models.schemas import SimpleWhatsAppConnectionResponse
@@ -8,17 +8,25 @@ from app.services.self_hosted_runtime_service import (
     SelfHostedRuntimeServiceError,
     get_self_hosted_runtime_service,
 )
+from app.services.tenant import request_user, user_channel_key, user_connection_name
 from app.utils.config import get_settings
 
 router = APIRouter(include_in_schema=False)
 api_router = APIRouter(prefix="/api/v1/connect/whatsapp", tags=["connect"])
-def build_error_response(error_message: str, *, logout_performed: bool = False) -> SimpleWhatsAppConnectionResponse:
+def build_error_response(
+    error_message: str,
+    *,
+    connection_name: str = "",
+    channel_key: str = "",
+    logout_performed: bool = False,
+) -> SimpleWhatsAppConnectionResponse:
     """Return a stable error payload for the self-hosted connect page."""
     settings = get_settings()
     return SimpleWhatsAppConnectionResponse(
         configured=True,
-        connection_name=settings.simple_connect_name,
+        connection_name=connection_name or settings.simple_connect_name,
         connection_status="error",
+        device_id=channel_key,
         qr_type="error",
         qr_message=error_message,
         last_error=error_message,
@@ -29,6 +37,8 @@ def build_error_response(error_message: str, *, logout_performed: bool = False) 
 def build_runtime_snapshot_response(
     runtime_payload: dict[str, object],
     *,
+    connection_name: str,
+    channel_key: str,
     logout_performed: bool = False,
 ) -> SimpleWhatsAppConnectionResponse:
     """Convert the local runtime payload into the lightweight connect response."""
@@ -44,7 +54,7 @@ def build_runtime_snapshot_response(
     phone = str(runtime_payload.get("phone", "")).strip()
     push_name = str(runtime_payload.get("push_name", "")).strip()
     wid = str(runtime_payload.get("wid", "")).strip()
-    display_name = str(runtime_payload.get("display_name", settings.simple_connect_name)).strip()
+    display_name = str(runtime_payload.get("display_name", connection_name)).strip()
     platform = str(runtime_payload.get("platform", "")).strip()
     profile_name = (
         str(profile.get("name", "")).strip()
@@ -59,7 +69,6 @@ def build_runtime_snapshot_response(
     )
     description = str(profile.get("about", "")).strip()
     avatar = str(profile.get("avatar_url", "")).strip()
-    runtime_channel_key = settings.runtime_platform_channel_key
 
     if normalized_status == "connected":
         qr_type = "alreadyLogged"
@@ -76,13 +85,13 @@ def build_runtime_snapshot_response(
 
     return SimpleWhatsAppConnectionResponse(
         configured=True,
-        connection_name=settings.simple_connect_name,
+        connection_name=connection_name,
         connection_status=normalized_status,
         state_instance=connection_status_raw or "disconnected",
         status_instance=platform or connection_status_raw or "runtime",
         phone=phone,
         chat_id=wid,
-        device_id=runtime_channel_key,
+        device_id=channel_key,
         avatar=avatar,
         base64_avatar=avatar,
         profile_name=profile_name,
@@ -100,23 +109,43 @@ def build_runtime_snapshot_response(
     )
 
 
-def collect_simple_connection_snapshot(*, include_qr: bool, reset_session: bool) -> SimpleWhatsAppConnectionResponse:
-    """Read the current platform-owned WhatsApp connection state from the local runtime."""
+def collect_simple_connection_snapshot(
+    *,
+    request: Request,
+    include_qr: bool,
+    reset_session: bool,
+) -> SimpleWhatsAppConnectionResponse:
+    """Read the current user's WhatsApp connection state from the local runtime."""
     del include_qr
 
-    settings = get_settings()
+    user = request_user(request)
     runtime_service = get_self_hosted_runtime_service()
-    channel_key = settings.runtime_platform_channel_key
+    channel_key = user_channel_key(user)
+    connection_name = user_connection_name(user)
 
     try:
         if reset_session:
             runtime_payload = runtime_service.reset_channel(channel_key)
-            return build_runtime_snapshot_response(runtime_payload, logout_performed=True)
+            return build_runtime_snapshot_response(
+                runtime_payload,
+                connection_name=connection_name,
+                channel_key=channel_key,
+                logout_performed=True,
+            )
 
-        runtime_payload = runtime_service.ensure_channel(channel_key, settings.simple_connect_name)
-        return build_runtime_snapshot_response(runtime_payload)
+        runtime_payload = runtime_service.ensure_channel(channel_key, connection_name)
+        return build_runtime_snapshot_response(
+            runtime_payload,
+            connection_name=connection_name,
+            channel_key=channel_key,
+        )
     except SelfHostedRuntimeServiceError as exc:
-        return build_error_response(str(exc), logout_performed=reset_session)
+        return build_error_response(
+            str(exc),
+            connection_name=connection_name,
+            channel_key=channel_key,
+            logout_performed=reset_session,
+        )
 
 
 @router.get("/connect/whatsapp", response_class=HTMLResponse)
@@ -270,12 +299,12 @@ def whatsapp_connect_page() -> str:
 
 
 @api_router.get("/status", response_model=SimpleWhatsAppConnectionResponse)
-def get_simple_whatsapp_status(include_qr: bool = True) -> SimpleWhatsAppConnectionResponse:
-    """Return the current status for the platform-owned WhatsApp account."""
-    return collect_simple_connection_snapshot(include_qr=include_qr, reset_session=False)
+def get_simple_whatsapp_status(request: Request, include_qr: bool = True) -> SimpleWhatsAppConnectionResponse:
+    """Return the current status for the current user's WhatsApp account."""
+    return collect_simple_connection_snapshot(request=request, include_qr=include_qr, reset_session=False)
 
 
 @api_router.post("/reset", response_model=SimpleWhatsAppConnectionResponse)
-def reset_simple_whatsapp_connection() -> SimpleWhatsAppConnectionResponse:
-    """Reset the local platform session and request a fresh QR code."""
-    return collect_simple_connection_snapshot(include_qr=True, reset_session=True)
+def reset_simple_whatsapp_connection(request: Request) -> SimpleWhatsAppConnectionResponse:
+    """Reset the current user's local session and request a fresh QR code."""
+    return collect_simple_connection_snapshot(request=request, include_qr=True, reset_session=True)

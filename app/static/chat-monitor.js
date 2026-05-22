@@ -486,3 +486,10 @@
     }
   });
 })();
+const chatMonitorNavLinks = document.querySelector(".nav-links");
+if (chatMonitorNavLinks && !chatMonitorNavLinks.querySelector('[href="/logout"]')) {
+  const logoutLink = document.createElement("a");
+  logoutLink.href = "/logout";
+  logoutLink.textContent = "Выйти";
+  chatMonitorNavLinks.appendChild(logoutLink);
+}

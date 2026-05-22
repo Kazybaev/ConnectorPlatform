@@ -132,17 +132,8 @@
       return null;
     }
 
-    const rawSnapshot = window.localStorage.getItem(STORAGE_KEY);
-    if (!rawSnapshot) {
-      return null;
-    }
-
-    try {
-      return JSON.parse(rawSnapshot);
-    } catch (_error) {
-      window.localStorage.removeItem(STORAGE_KEY);
-      return null;
-    }
+    window.localStorage.removeItem(STORAGE_KEY);
+    return null;
   }
 
   function formatMapped(rawValue, mapping, fallback) {
@@ -354,3 +345,10 @@
     }
   });
 })();
+const onboardingNavLinks = document.querySelector(".nav-links");
+if (onboardingNavLinks && !onboardingNavLinks.querySelector('[href="/logout"]')) {
+  const logoutLink = document.createElement("a");
+  logoutLink.href = "/logout";
+  logoutLink.textContent = "Выйти";
+  onboardingNavLinks.appendChild(logoutLink);
+}

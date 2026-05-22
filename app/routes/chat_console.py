@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 
-from fastapi import APIRouter, Header, HTTPException, status
+from fastapi import APIRouter, Header, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 
 from app.models.schemas import (
@@ -27,6 +27,7 @@ from app.services.chat_store import (
 )
 from app.services.chat_presence import get_chat_presence_service
 from app.services.self_hosted_runtime_service import SelfHostedRuntimeServiceError, get_self_hosted_runtime_service
+from app.services.tenant import request_user, user_channel_key
 from app.utils.config import get_settings
 
 router = APIRouter(include_in_schema=False)
@@ -94,6 +95,20 @@ def ensure_runtime_callback_authorized(x_runtime_callback_token: str | None) -> 
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing X-Runtime-Callback-Token.",
         )
+
+
+def is_channel_connected(channel_key: str) -> bool:
+    """Return True only when the current user's WhatsApp runtime is connected."""
+    runtime_service = get_self_hosted_runtime_service()
+    if not runtime_service.is_healthy():
+        return False
+
+    try:
+        payload = runtime_service.get_channel_status(channel_key)
+    except SelfHostedRuntimeServiceError:
+        return False
+
+    return str(payload.get("connection_status", "")).strip().lower() == "connected"
 
 
 def should_store_personal_runtime_message(payload: RuntimeIncomingMessageRequest) -> bool:
@@ -405,9 +420,12 @@ def receive_runtime_incoming_message(
 
 
 @api_router.get("/api/v1/platform/chats/conversations", response_model=list[PlatformConversationResponse])
-def list_platform_conversations(channel_key: str | None = None) -> list[PlatformConversationResponse]:
-    """Return the latest chat conversations for the platform inbox."""
-    resolved_channel = channel_key or get_settings().runtime_platform_channel_key
+def list_platform_conversations(request: Request) -> list[PlatformConversationResponse]:
+    """Return the latest chat conversations for the current user's inbox."""
+    resolved_channel = user_channel_key(request_user(request))
+    if not is_channel_connected(resolved_channel):
+        return []
+
     conversations = get_chat_store_service().list_conversations(resolved_channel)
     hydrate_conversation_profiles(resolved_channel, conversations)
     return [serialize_conversation(conversation) for conversation in conversations]
@@ -415,32 +433,35 @@ def list_platform_conversations(channel_key: str | None = None) -> list[Platform
 
 @api_router.get("/api/v1/platform/chats/{chat_id}/messages", response_model=list[PlatformChatMessageResponse])
 def list_platform_chat_messages(
+    request: Request,
     chat_id: str,
-    channel_key: str | None = None,
     limit: int = 200,
 ) -> list[PlatformChatMessageResponse]:
-    """Return one chat timeline from the platform inbox."""
-    resolved_channel = channel_key or get_settings().runtime_platform_channel_key
+    """Return one chat timeline from the current user's inbox."""
+    resolved_channel = user_channel_key(request_user(request))
+    if not is_channel_connected(resolved_channel):
+        return []
+
     messages = get_chat_store_service().list_messages(resolved_channel, chat_id, limit=limit)
     return [serialize_message(message) for message in messages]
 
 
 @api_router.post("/api/v1/platform/chats/{chat_id}/read")
-def mark_platform_conversation_read(chat_id: str, channel_key: str | None = None) -> dict[str, object]:
+def mark_platform_conversation_read(request: Request, chat_id: str) -> dict[str, object]:
     """Clear unread counters for one conversation."""
-    resolved_channel = channel_key or get_settings().runtime_platform_channel_key
+    resolved_channel = user_channel_key(request_user(request))
     get_chat_store_service().mark_conversation_read(resolved_channel, chat_id)
     return {"ok": True}
 
 
 @api_router.post("/api/v1/platform/chats/{chat_id}/send", response_model=PlatformChatSendResponse)
 def send_platform_chat_reply(
+    request: Request,
     chat_id: str,
     payload: PlatformChatSendRequest,
-    channel_key: str | None = None,
 ) -> PlatformChatSendResponse:
     """Send one manual operator message through the platform runtime."""
-    resolved_channel = channel_key or get_settings().runtime_platform_channel_key
+    resolved_channel = user_channel_key(request_user(request))
     runtime_service = get_self_hosted_runtime_service()
 
     try:
